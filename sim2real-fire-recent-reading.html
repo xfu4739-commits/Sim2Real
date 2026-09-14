@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Sim2Real-Fire 近两年扩展阅读清单：火蔓延预测、域适应、多模态、物理融合与可信评估。">
+  <title>Sim2Real-Fire 近两年扩展阅读地图</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath fill='%23e55b2d' d='M34 4c3 13-8 16-3 27 2-7 8-9 10-16 10 9 15 19 11 31-4 11-15 16-26 13C12 56 6 45 10 33c3-9 11-14 17-22 1 8 1 14 7 18-2-9 5-15 0-25Z'/%3E%3C/svg%3E">
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3f5f7;
+      --surface: #ffffff;
+      --surface-2: #f8fafb;
+      --text: #18212b;
+      --muted: #637080;
+      --line: #d8dee5;
+      --accent: #c84720;
+      --accent-soft: #fff0e9;
+      --blue: #235f9e;
+      --blue-soft: #eaf3fb;
+      --green: #28734f;
+      --green-soft: #e8f4ed;
+      --amber: #8a5a00;
+      --amber-soft: #fff4d6;
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+    a { color: var(--blue); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    a:hover { color: var(--accent); }
+    button, input, select { font: inherit; }
+    .shell { max-width: 1500px; margin: 0 auto; padding: 28px; }
+    header { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 24px; align-items: end; margin-bottom: 22px; }
+    h1 { margin: 0 0 7px; font-size: clamp(1.65rem, 3vw, 2.4rem); line-height: 1.2; letter-spacing: -.025em; }
+    h2 { margin: 0; font-size: 1.25rem; }
+    h3 { margin: 0 0 6px; font-size: 1rem; }
+    p { margin: 0; }
+    .sub { color: var(--muted); max-width: 900px; }
+    .stats { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .stat { min-width: 92px; padding: 9px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; }
+    .stat strong { display: block; font-size: 1.25rem; line-height: 1.2; }
+    .stat span { color: var(--muted); font-size: .78rem; }
+    .warning { margin-bottom: 18px; padding: 13px 16px; border-left: 4px solid var(--accent); background: var(--accent-soft); }
+    .warning strong { margin-right: 8px; }
+    .overview { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; margin-bottom: 18px; }
+    .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
+    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 13px; }
+    .step { padding-left: 12px; border-left: 3px solid var(--line); }
+    .step:nth-child(1) { border-color: var(--accent); }
+    .step:nth-child(2) { border-color: var(--blue); }
+    .step:nth-child(3) { border-color: var(--green); }
+    .step p, .questions li { color: var(--muted); font-size: .9rem; }
+    .questions { margin: 10px 0 0; padding-left: 22px; }
+    .questions li + li { margin-top: 5px; }
+    .toolbar { position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 94%, transparent); backdrop-filter: blur(10px); padding: 12px 0; }
+    .controls { display: grid; grid-template-columns: minmax(240px, 1.5fr) repeat(3, minmax(130px, .55fr)) auto; gap: 9px; }
+    .control { width: 100%; min-height: 42px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; background: var(--surface); color: var(--text); }
+    button.control { width: auto; cursor: pointer; }
+    button.control:hover { border-color: var(--accent); color: var(--accent); }
+    .result-meta { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 10px 0 8px; color: var(--muted); font-size: .88rem; }
+    .legend { display: flex; gap: 8px; flex-wrap: wrap; }
+    .tag { display: inline-flex; align-items: center; white-space: nowrap; border-radius: 999px; padding: 2px 8px; font-size: .76rem; border: 1px solid var(--line); background: var(--surface-2); }
+    .tag.s { color: var(--accent); border-color: #e5aa96; background: var(--accent-soft); font-weight: 700; }
+    .tag.a { color: var(--blue); background: var(--blue-soft); }
+    .tag.b { color: var(--muted); }
+    .tag.formal { color: var(--green); background: var(--green-soft); border-color: #a8d1b8; }
+    .tag.preprint { color: var(--amber); background: var(--amber-soft); border-color: #ddc27b; }
+    .table-wrap { overflow: auto; max-height: 72vh; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+    table { width: 100%; border-collapse: collapse; min-width: 1100px; }
+    th { position: sticky; top: 0; z-index: 2; text-align: left; background: #eef1f4; color: #42505f; font-size: .79rem; letter-spacing: .03em; padding: 11px 12px; border-bottom: 1px solid var(--line); }
+    td { vertical-align: top; padding: 13px 12px; border-bottom: 1px solid var(--line); font-size: .91rem; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: var(--surface-2); }
+    .paper-title { display: block; font-weight: 650; line-height: 1.42; margin-bottom: 5px; }
+    .meta { color: var(--muted); font-size: .8rem; }
+    .relation { min-width: 280px; }
+    .focus { min-width: 245px; color: #495767; }
+    .badges { display: flex; gap: 5px; flex-wrap: wrap; min-width: 145px; }
+    .empty { display: none; padding: 42px; text-align: center; color: var(--muted); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+    footer { margin-top: 18px; color: var(--muted); font-size: .82rem; }
+    @media (max-width: 980px) {
+      header, .overview { grid-template-columns: 1fr; }
+      .stats { justify-content: flex-start; }
+      .steps { grid-template-columns: 1fr; }
+      .controls { grid-template-columns: 1fr 1fr; }
+      .controls input { grid-column: 1 / -1; }
+    }
+    @media (max-width: 640px) {
+      .shell { padding: 18px 12px; }
+      .controls { grid-template-columns: 1fr; }
+      .controls input { grid-column: auto; }
+      .result-meta { align-items: flex-start; flex-direction: column; }
+      .table-wrap { max-height: none; border: 0; overflow: visible; background: transparent; }
+      table, thead, tbody, tr, td { display: block; min-width: 0; }
+      thead { display: none; }
+      tbody { display: grid; gap: 10px; }
+      tr { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 13px; }
+      td { border: 0; padding: 5px 0; }
+      td::before { display: block; color: var(--muted); font-size: .72rem; font-weight: 650; text-transform: uppercase; }
+      td:nth-child(2)::before { content: "分类"; }
+      td:nth-child(3)::before { content: "与项目的关系"; }
+      td:nth-child(4)::before { content: "阅读重点"; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <h1>Sim2Real-Fire 近两年扩展阅读地图</h1>
+        <p class="sub">严格时间窗：2024-09-13 至 2026-09-13。围绕火蔓延预测、模拟到真实域迁移、多模态地球观测、物理融合与可信评估。</p>
+      </div>
+      <div class="stats" aria-label="清单统计">
+        <div class="stat"><strong id="totalStat">18</strong><span>篇候选论文</span></div>
+        <div class="stat"><strong id="mustStat">5</strong><span>S 级必读</span></div>
+        <div class="stat"><strong id="formalStat">12</strong><span>正式发表</span></div>
+        <div class="stat"><strong id="preprintStat">6</strong><span>预印本</span></div>
+      </div>
+    </header>
+
+    <div class="warning"><strong>先区分任务，再比较指标。</strong>火灾发生风险、火活动预测、最终燃烧范围、次日蔓延分割和逐时火线预测不是同一任务。优先核对输入时刻、预测时距、空间分辨率、标签定义与数据切分。</div>
+
+    <section class="overview">
+      <div class="panel">
+        <h2>两周最短阅读路径</h2>
+        <div class="steps">
+          <div class="step"><h3>1. 建立共同基线</h3><p>Sim2Real-Fire → TS-SatFire → WSTS+ 时序 Attention。</p></div>
+          <div class="step"><h3>2. 直攻域差距</h3><p>SegDesicNet → Video Foundation Model → Wildfire Mapping LoRA。</p></div>
+          <div class="step"><h3>3. 物理与可信评估</h3><p>PINN 参数学习 → 自适应观测误差 → 空间自相关评估。</p></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>可直接转成实验的问题</h2>
+        <ol class="questions">
+          <li>少量真实域适配能否稳定提升跨地区 IoU？</li>
+          <li>加入地理坐标、传感器与观测时间作为 domain token 是否有效？</li>
+          <li>CA/PINN 约束能否减少不符合物理规律的火线预测？</li>
+          <li>按地区与时间切分后，提升是否仍成立？</li>
+          <li>AnySat/TerraMind 特征的精度收益是否值得推理成本？</li>
+        </ol>
+      </div>
+    </section>
+
+    <section>
+      <div class="toolbar">
+        <div class="controls">
+          <input id="search" class="control" type="search" placeholder="搜索标题、主题、关系或阅读重点…" aria-label="搜索论文">
+          <select id="theme" class="control" aria-label="按主题筛选"><option value="">全部主题</option></select>
+          <select id="priority" class="control" aria-label="按优先级筛选">
+            <option value="">全部优先级</option><option value="S">S 级</option><option value="A">A 级</option><option value="B">B 级</option>
+          </select>
+          <select id="status" class="control" aria-label="按发表状态筛选">
+            <option value="">全部状态</option><option value="正式发表">正式发表</option><option value="预印本">预印本</option>
+          </select>
+          <button id="reset" class="control" type="button">重置</button>
+        </div>
+      </div>
+      <div class="result-meta">
+        <span id="count"></span>
+        <div class="legend"><span class="tag s">S 直接影响下一步</span><span class="tag a">A 强相关对照</span><span class="tag b">B 拓展视野</span></div>
+      </div>
+      <div class="table-wrap" id="tableWrap">
+        <table>
+          <thead><tr><th style="width:27%">论文与出处</th><th style="width:13%">优先级 / 主题</th><th style="width:31%">与 Sim2Real-Fire 的关系</th><th>建议重点</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="empty">没有匹配的论文，请调整筛选条件。</div>
+    </section>
+
+    <footer>筛选原则：仅收录时间窗内的一手论文页；正式发表与预印本分开标注。相关性依据项目的多模态环境输入、模拟训练到真实测试、火区预测与回溯任务判断。</footer>
+  </main>
+  <script>
+    const papers = [
+      [2024,"Sim2Real-Fire: A Multi-modal Simulation Dataset for Forecast and Backtracking of Real-world Forest Fire","NeurIPS 2024 Datasets & Benchmarks","正式发表","S","项目锚点","项目原论文；定义 1M 模拟训练、1K 真实测试、预测与回溯任务。","复现实验设定、数据模态、S2R-FireTr 与 Sim2Real gap 的原始定义。","https://proceedings.neurips.cc/paper_files/paper/2024/hash/02e978a2cc9a1d0d4376a7deb01db612-Abstract-Datasets_and_Benchmarks_Track.html"],
+      [2024,"TS-SatFire: A Multi-Task Satellite Image Time-Series Dataset for Wildfire Detection and Prediction","arXiv 2412.11555","预印本","S","数据集与任务","真实卫星时序及天气、地形、土地覆盖和燃料数据，可作真实域补充与外部验证。","对齐 active-fire detection、burned-area mapping、next-day progression 与标签质控。","https://arxiv.org/abs/2412.11555"],
+      [2025,"Predicting Next-Day Wildfire Spread with Time Series and Attention","arXiv 2502.12003","预印本","S","火蔓延预测","接近 S2R-FireTr 的时序 Transformer 对照，在 WSTS/WSTS+ 上比较单日与多日输入。","SwinUNet 改造、预训练收益、多日上下文与跨年域移。","https://arxiv.org/abs/2502.12003"],
+      [2025,"Wildfire Spread Forecasting with Deep Learning","arXiv 2505.17556","预印本","A","火蔓延预测","覆盖地中海真实火灾并融合遥感、气象、植被、地形和人为因素。","最终燃烧范围、时间窗口消融、公开数据的外部复现。","https://arxiv.org/abs/2505.17556"],
+      [2026,"Adapting Video Foundation Models for Spatiotemporal Wildfire Forecasting via Cross-Modal Progressive Fine-Tuning","IEEE TGRS 2026","正式发表","S","基础模型与多模态","直接研究自然视频预训练到多模态卫星火灾预测的域差距。","跨模态结构对齐、渐进微调、有限真实标注下的时空迁移。","https://ieeexplore.ieee.org/document/11343839/"],
+      [2026,"FireSenseNet: A Dual-Branch CNN with Cross-Attentive Feature Interaction for Next-Day Wildfire Spread Prediction","arXiv 2604.07675","预印本","A","火蔓延预测","用双分支与跨注意力显式建模燃料—天气交互，可作轻量融合对照。","交互模块、CNN/ViT/混合模型公平比较、参数效率。","https://arxiv.org/abs/2604.07675"],
+      [2025,"Physics-Informed Neural Networks for Parameter Learning of Wildfire Spreading","CMAME 434, 117545","正式发表","S","物理与数据融合","把火蔓延动力学约束引入学习系统，可缓解模拟监督偏差与不可解释性。","可解释参数识别、PDE/ODE 约束、合成与经验火前沿联合训练。","https://doi.org/10.1016/j.cma.2024.117545"],
+      [2024,"Experimental and Numerical Study on Data-Driven Prediction for Wildfire Spread Incorporating Adaptive Observation Error Adjustment","Fire Safety Journal 148, 104230","正式发表","A","物理与数据融合","显式处理模拟与观测误差，贴近真实标签噪声和模拟器偏差。","数据同化、动态观测误差协方差、真实与合成观测融合。","https://doi.org/10.1016/j.firesaf.2024.104230"],
+      [2025,"Modeling the Spread of Forest Fires Through Cellular Automata by Leveraging Deep Learning to Derive Transition Rules","Ecological Informatics 2025","正式发表","A","物理与数据融合","Transformer 学习元胞自动机转移规则，为加入局部传播机制提供对照。","可学习 CA、局部物理传播规则、真实火场 footprint 验证。","https://www.sciencedirect.com/science/article/pii/S1574954125001591"],
+      [2025,"SegDesicNet: Lightweight Semantic Segmentation in Remote Sensing with Geo-Coordinate Embeddings for Domain Adaptation","WACV 2025","正式发表","S","Sim2Real 与域泛化","地理位置驱动的无监督域适应，直接对应模拟域到不同真实地区的偏移。","geo-coordinate embedding、无标签目标域损失、轻量适配模块。","https://openaccess.thecvf.com/content/WACV2025/html/Verma_SegDesicNet_Lightweight_Semantic_Segmentation_in_Remote_Sensing_with_Geo-Coordinate_Embeddings_WACV_2025_paper.html"],
+      [2026,"Low-Rank Adaptation of Geospatial Foundation Models for Wildfire Mapping Using Sentinel-2 Data","arXiv 2605.04989","预印本","A","Sim2Real 与域泛化","评估野火制图中的地理与时间域移，提供参数高效适配真实遥感域的路线。","LoRA 与全量微调、跨生态区泛化、空间/时间分割协议。","https://arxiv.org/abs/2605.04989"],
+      [2025,"TerraMind: Large-Scale Generative Multimodality for Earth Observation","ICCV 2025","正式发表","A","基础模型与多模态","九种地理模态的 any-to-any 模型，可增强多模态环境编码器。","双尺度融合、缺失模态补全、few-shot 与 burn-scar benchmark。","https://openaccess.thecvf.com/content/ICCV2025/html/Jakubik_TerraMind_Large-Scale_Generative_Multimodality_for_Earth_Observation_ICCV_2025_paper.html"],
+      [2025,"AnySat: One Earth Observation Model for Many Resolutions, Scales, and Modalities","CVPR 2025","正式发表","A","基础模型与多模态","处理多传感器和不同分率，适合解决多模态栅格对齐。","尺度自适应编码、JEPA 自监督、burn-scar 分割迁移。","https://openaccess.thecvf.com/content/CVPR2025/html/Astruc_AnySat_One_Earth_Observation_Model_for_Many_Resolutions_Scales_and_CVPR_2025_paper.html"],
+      [2025,"Global Data-Driven Prediction of Fire Activity","Nature Communications 16, 2918","正式发表","A","真实部署与评估","从局地火线扩展到全球业务化火活动预测，提供真实运行视角。","全球泛化、业务链路、数据质量与模型能力归因。","https://www.nature.com/articles/s41467-025-58097-7"],
+      [2025,"Assessment of Spatial Autocorrelation and Scalability in Fine-Scale Wildfire Random Forest Prediction Models","Scientific Reports 15, 21504","正式发表","A","真实部署与评估","提醒随机切分可能被空间自相关放大，关系到跨场景评估可信度。","空间泄漏、区域外推、细尺度变量与验证设计。","https://www.nature.com/articles/s41598-025-06814-z"],
+      [2025,"FireCastNet: Earth-as-a-Graph for Seasonal Fire Prediction","Scientific Reports 2025","正式发表","B","真实部署与评估","任务尺度不同，但图式全球时空建模可启发跨区域依赖。","图时空建模、季节尺度火活动、分生物群落评估。","https://www.nature.com/articles/s41598-025-30645-7"],
+      [2025,"Zone Adaptive Fuel Mapping for High Resolution Wildfire Spread Forecasting","Scientific Reports 15, 22254","正式发表","B","数据集与任务","聚焦燃料地图质量，可检验燃料模态是否成为跨域瓶颈。","区域自适应燃料制图及输入误差向预测的传递。","https://www.nature.com/articles/s41598-025-06402-1"],
+      [2025,"A Real-Time Multimodal Transformer Neural Network-Powered Wildfire Forecasting System","arXiv 2503.05971","预印本","B","真实部署与评估","同样使用多模态 Transformer，强调实时天气、地形和植被接入。","端到端实时系统定义；结论需结合预印本状态谨慎验证。","https://arxiv.org/abs/2503.05971"]
+    ].map(([year,title,venue,status,priority,theme,relation,focus,url]) => ({year,title,venue,status,priority,theme,relation,focus,url}));
+
+    const $ = id => document.getElementById(id);
+    const controls = [$("search"), $("theme"), $("priority"), $("status")];
+    const order = {S: 0, A: 1, B: 2};
+    [...new Set(papers.map(p => p.theme))].sort().forEach(theme => {
+      const option = document.createElement("option"); option.value = theme; option.textContent = theme; $("theme").append(option);
+    });
+    $("totalStat").textContent = papers.length;
+    $("mustStat").textContent = papers.filter(p => p.priority === "S").length;
+    $("formalStat").textContent = papers.filter(p => p.status === "正式发表").length;
+    $("preprintStat").textContent = papers.filter(p => p.status === "预印本").length;
+
+    function escapeHTML(value) {
+      return String(value).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"})[c]);
+    }
+    function render() {
+      const q = $("search").value.trim().toLocaleLowerCase("zh-CN");
+      const theme = $("theme").value, priority = $("priority").value, status = $("status").value;
+      const filtered = papers.filter(p => {
+        const haystack = [p.title,p.venue,p.theme,p.relation,p.focus].join(" ").toLocaleLowerCase("zh-CN");
+        return (!q || haystack.includes(q)) && (!theme || p.theme === theme) && (!priority || p.priority === priority) && (!status || p.status === status);
+      }).sort((a,b) => order[a.priority] - order[b.priority] || b.year - a.year);
+      $("count").textContent = `当前显示 ${filtered.length} / ${papers.length} 篇`;
+      $("rows").innerHTML = filtered.map(p => `<tr>
+        <td><a class="paper-title" href="${escapeHTML(p.url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(p.title)}</a><div class="meta">${p.year} · ${escapeHTML(p.venue)}</div></td>
+        <td><div class="badges"><span class="tag ${p.priority.toLowerCase()}">${p.priority} 级</span><span class="tag ${p.status === "正式发表" ? "formal" : "preprint"}">${p.status}</span><span class="tag">${escapeHTML(p.theme)}</span></div></td>
+        <td class="relation">${escapeHTML(p.relation)}</td><td class="focus">${escapeHTML(p.focus)}</td>
+      </tr>`).join("");
+      $("tableWrap").style.display = filtered.length ? "block" : "none";
+      $("empty").style.display = filtered.length ? "none" : "block";
+    }
+    controls.forEach(el => el.addEventListener(el.type === "search" ? "input" : "change", render));
+    $("reset").addEventListener("click", () => { controls.forEach(el => el.value = ""); render(); $("search").focus(); });
+    render();
+  </script>
+</body>
+</html>

@@ -96,11 +96,11 @@ class SimFireDataset(Dataset):
         return len(self.fire_path)
 
     def __getitem__(self, index): 
-        fire_path = self.fire_path[index]
-        target_path = self.target_path[index]
-        sate_path = self.sate_path[index]
-        fire_name = self.fire_name[index]
-        time_steps = self.time_steps[index]
+        fire_path = self.fire_path[index]       # 输入火场序列各时刻的图像路径列表
+        target_path = self.target_path[index]   # 目标火场序列各时刻的图像路径列表
+        sate_path = self.sate_path[index]       # 与输入时刻对应的卫星图像路径列表
+        fire_name = self.fire_name[index]       # 场景根目录名，用于索引该场景的静态环境数据
+        time_steps = self.time_steps[index]     # 目标时刻的归一化时间戳（相对序列起止时间）
         topo = self.topo[fire_name]
         vege = self.vege[fire_name]
         fuel = self.fuel[fire_name]
@@ -125,12 +125,20 @@ class SimFireDataset(Dataset):
         return index, input_squence, output_squence, fuel, vege, topo, torch.rand(3,3,256, 256), wxs, torch.tensor(time_steps)
 
     def process_image(self, file_path, gray=True):
-        img = cv2.imread(file_path)
+        ''' 图像预处理函数，负责把磁盘上的 JPG 读进来，转成模型可用的 PyTorch 张量
+        gray=True 火场输入输出
+        gray=False 卫星图像 保留三通道
+        '''
+        img = cv2.imread(file_path) # 用 OpenCV 读取，默认是 BGR 三通道，uint8，值域 [0, 255]
         if gray:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            img[np.where(img > 0)] = 1
-            img = torch.from_numpy(cv2.resize(img, self.img_size, interpolation=cv2.INTER_NEAREST)).unsqueeze(0)
+            # （H,W,3) 到 (H,W)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) # 转换颜色，从BGR道GRAY，返回新的numpy数组
+            img[np.where(img > 0)] = 1 # 二值化，非零值设为 1
+            # 缩放图像 → 转成 PyTorch 张量 → 增加通道维度
+            # interpolation=cv2.INTER_NEAREST 最近邻插值，新像素取决于最近像素值不做加权平均
+            img = torch.from_numpy(cv2.resize(img, self.img_size, interpolation=cv2.INTER_NEAREST)).unsqueeze(0) # 在第0维增加一个通道维度 
         else:
+            # 缩放图像 → 转成 PyTorch 张量 → 调整通道顺序
             img = cv2.resize(img, self.img_size, interpolation=cv2.INTER_NEAREST)
             img = torch.from_numpy(img).permute(2, 0, 1)
         return img
