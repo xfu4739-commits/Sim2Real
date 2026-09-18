@@ -1,25 +1,40 @@
 dataset:
-  sim_root_dir: ['/data/sim_data',]
-  real_root_dir: ['/data/real_world']
-  vis_dir: /data/vis
-  train_dir: 'train'
-  val_dir: 'val'
-  trainwxs_dir: 'wxs_train'
-  topo_dir: 'landfire'
-  vege_dir: 'landfire'
-  fuel_dir: 'landfire'
-  sate_dir: 'train'
-  valwxs_dir: 'wxs_val'
-  test_dir: 'test'
-  testwxs_dir: 'wxs_test'
-  test_landfire: 'carr_landfire'
+  # Quick-test: point directly at one scene folder (not sim_full parent).
+  # 0156_00112 is the smallest scene in sim_full (112 fire events).
+  sim_root_dir: 'C:/Users/10115/Datasets/Sim2Real-Fire/sim_full/0156_00112'
+  real_root_dir: 'C:/Users/10115/Datasets/Sim2Real-Fire/real_full'
+  vis_dir: 'C:/Users/10115/Datasets/Sim2Real-Fire/vis'
+  # sim_full: fire masks live under Satellite_Images_Mask/<sub_id>/outK.jpg
+  train_dir: 'Satellite_Images_Mask'
+  val_dir: 'Satellite_Images_Mask'
+  trainwxs_dir: 'Weather_Data'
+  valwxs_dir: 'Weather_Data'
+  topo_dir: 'Topography_Map'
+  vege_dir: 'Vegetation_Map'
+  fuel_dir: 'Fuel_Map'
+  sim_satellite_file: 'satellite_image.png'
+  # Fuse satellite_image.png with each input fire mask on load (see dataset/satellite_fusion.py).
+  satellite_fusion:
+    enabled: true
+    style: burn-scar          # burn-scar（训练用）或 overlay（调试）
+    match_radiometry: true      # 模拟底图亮度归一化，建议保持 true
+    hotspots: true
+    alpha: 0.85                 # overlay only
+    fire_color: [255, 80, 0]   # overlay only, RGB
+  # real_full: RGB under Satellite_Images/<sub_id>/, masks under Satellite_Images_Mask/
+  real_satellite_dir: 'Satellite_Images'
+  test_dir: 'Satellite_Images_Mask'
+  testwxs_dir: 'Weather_Data'
   input_length: 3
   img_size: [256, 256]
   reverse: True
-  vege_classes: [9, 20, 12, 11, 4]
-  fuel_classes: [21]
   num_classes: 2
   num_workers: 4
+  # Split simulation fire events (Satellite_Images_Mask/<sub_id>/) into train/val.
+  sim_split:
+    enabled: true
+    val_ratio: 0.2
+    seed: 12345
 
 FireTr:
   input_length: 3
@@ -32,7 +47,8 @@ FireTr:
     head_dim: 32
     window_size: 8
     relative_pos_embedding: True
-    modal_channel: 36
+    # topography=3, vegetation=6, fuel=10, three RGB frames=9: 3+6+10+9=28
+    modal_channel: 28
   Spatial:
     embed_dim: 384
     num_heads: 4
@@ -47,11 +63,11 @@ FireTr:
     hidden_dim: 512
 
 training:
-  batch_size: 8
+  batch_size: 4
   learning_rate: 0.0001
-  epochs: 10
+  epochs: 3
 
 checkpoint:
   checkpoint: False
-  checkpoint_path: '/best_iou.pth'
-  model_save_path: '/models/backtrack'
+  checkpoint_path: 'output/models/quick_test/best_iou.pth'
+  model_save_path: 'output/models/quick_test'

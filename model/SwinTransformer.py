@@ -200,6 +200,14 @@ class WindowAttention(nn.Module):
 
         return out
 
+# 这个Block（SwinBlock）接受的参数如下：
+# dim: 输入特征维度
+# heads: 多头自注意力的头数
+# head_dim: 每个头的维度
+# mlp_dim: MLP隐藏层的维度
+# shifted: 是否进行窗口偏移（shifted window）
+# window_size: 窗口大小
+# relative_pos_embedding: 是否使用相对位置编码
 class SwinBlock(nn.Module):
     def __init__(self, dim, heads, head_dim, mlp_dim, shifted, window_size, relative_pos_embedding):
         super().__init__()
@@ -270,8 +278,19 @@ class StageModule(nn.Module):
         super().__init__()
         assert layers % 2 == 0, 'Stage layers need to be divisible by 2 for regular and shifted block.'
 
-        self.patch_partition = PatchMerging(in_channels=in_channels, out_channels=hidden_dimension,
-                                            downscaling_factor=downscaling_factor)
+        # Patch partition（即 Patch Merging）用于对输入特征图进行空间上的降采样和通道扩展。
+        # 输入: in_channels 通道数的特征图
+        # 输出: hidden_dimension 通道数的特征图，空间尺寸缩小 downscaling_factor 倍
+        self.patch_partition = PatchMerging(
+            in_channels=in_channels,
+            out_channels=hidden_dimension,
+            downscaling_factor=downscaling_factor
+        )
+
+        '''
+        作者采用 CNN 与 Swin 并行，是为了同时保留局部细节和全局上下文，再通过 GRU 融合。
+        '''
+                                 
 
         self.layers = nn.ModuleList([])
         for _ in range(layers // 2):
@@ -280,22 +299,22 @@ class StageModule(nn.Module):
                           shifted=False, window_size=window_size, relative_pos_embedding=relative_pos_embedding),
                 SwinBlock(dim=hidden_dimension, heads=num_heads, head_dim=head_dim, mlp_dim=hidden_dimension * 4,
                           shifted=True, window_size=window_size, relative_pos_embedding=relative_pos_embedding),
-                DoubleConv(hidden_dimension, hidden_dimension),
+                DoubleConv(hidden_dimension, hidden_dimension), # 类似于Unet不改变维度
                 CASA(hidden_dimension),
                 GRU(hidden_dimension, h_w=h_w)
             ]))
 
     def forward(self, x):
-        x = self.patch_partition(x)
+        x = self.patch_partition(x) # 1. 下采样，升通道
         for regular_block, shifted_block, cnn, casa, gru in self.layers:
             x = x.permute(0, 3, 1, 2)
-            local_x = cnn(x)
+            local_x = cnn(x)    # 2. 局部分支：DoubleConv + CASA 
             local_x = casa(local_x)
             x = x.permute(0, 2, 3, 1)
-            global_x = regular_block(x)
+            global_x = regular_block(x) # 3. 全局分支：SwinBlock
             global_x = shifted_block(global_x)
             global_x = global_x.permute(0, 3, 1, 2)
-            out = gru(global_x, local_x)
+            out = gru(global_x, local_x) # 4. 全局与局部分支融合：GRU
         return out
 
 class StageModule_up(nn.Module):

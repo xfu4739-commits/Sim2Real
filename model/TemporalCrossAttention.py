@@ -79,36 +79,57 @@ class TemporalCrossAttention(nn.Module):
         self.wx_encoder = WxEncoder(input_dim=6, num_heads=num_heads, out_dim=embed_dim, hidden_dim=encoder_hidden_dim)
 
         self.q_proj = nn.Conv2d(embed_dim, embed_dim, kernel_size=1)
-        self.k_proj = nn.Linear(embed_dim, embed_dim)
-        self.v_proj = nn.Linear(embed_dim, embed_dim)
-        
+        # K/V come from concat([SwinEnc(I), MHA(W)]), so the fused token dim is 2C
+        self.k_proj = nn.Linear(embed_dim * 2, embed_dim)
+        self.v_proj = nn.Linear(embed_dim * 2, embed_dim)
+
         self.mha = MultiheadAttention(embed_dim, num_heads)
-        
+
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
         self.ff = FeedForward(embed_dim, ff_hidden_dim)
 
-    def forward(self, image_features, inputs):
-        b, t, c, h, w = image_features.shape
-        mask = torch.ones(b, t,).to(image_features.device)
-        inputs = inputs[..., :6]
-        weather_features = self.wx_encoder(inputs, mask)
+    def _flatten_tokens(self, x):
+        b, t, c, h, w = x.shape
+        return x.reshape(b * t, c, h * w).transpose(1, 2).reshape(b, t * h * w, c)
 
-        q = self.q_proj(image_features.view(b * t, c, h, w)).view(b, t, -1, c).reshape(b, t * h * w, c)
-        k = self.k_proj(weather_features)
-        v = self.v_proj(weather_features)
+    def forward(self, fire_features, satellite_features, weather_data):
+        """
+        fire_features:      (B, T, C, H, W)  Query = SwinEnc(S)
+        satellite_features: (B, T, C, H, W)  SwinEnc(I)
+        weather_data:       (B, T, N)        last 6 columns are meteorological features
+        """
+        b, t, c, h, w = fire_features.shape
+        if satellite_features.shape != fire_features.shape:
+            raise ValueError(
+                "fire_features and satellite_features must have the same shape, "
+                f"got {tuple(fire_features.shape)} and {tuple(satellite_features.shape)}"
+            )
+        if weather_data.shape[:2] != (b, t) or weather_data.shape[-1] < 6:
+            raise ValueError(
+                f"weather_data must have shape (B, T, N>=6), got {tuple(weather_data.shape)}"
+            )
+        mask = torch.ones(b, t, device=fire_features.device)
+        weather_features = self.wx_encoder(weather_data[..., -6:], mask)  # (B, T, C)
+
+        q = self.q_proj(fire_features.reshape(b * t, c, h, w))
+        q = q.reshape(b * t, c, h * w).transpose(1, 2).reshape(b, t * h * w, c)
+
+        weather_map = weather_features.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, h, w)
+        kv_features = torch.cat([satellite_features, weather_map], dim=2)  # (B, T, 2C, H, W)
+        kv_tokens = self._flatten_tokens(kv_features)  # (B, T*H*W, 2C)
+        k = self.k_proj(kv_tokens)
+        v = self.v_proj(kv_tokens)
 
         attn_output = self.mha(q, k, v)
         attn_output = attn_output.view(b, t, h, w, c).permute(0, 1, 4, 2, 3)
-
-        attn_output = attn_output + image_features
+        attn_output = attn_output + fire_features
 
         attn_output = self.norm1(attn_output.view(b * t, c, h * w).transpose(1, 2)).transpose(1, 2).view(b, t, c, h, w)
 
         ff_output = self.ff(attn_output.view(b * t, c, h * w).transpose(1, 2)).transpose(1, 2).view(b, t, c, h, w)
 
         output = self.norm2(ff_output.view(b * t, c, h * w).transpose(1, 2)).transpose(1, 2).view(b, t, c, h, w)
-
         output = output + attn_output
 
         return output

@@ -32,5 +32,5 @@ class Decoder(nn.Module):
         x4 = self.stage5(x3, x1)                
         x5 = self.stage6(x4)
         
-        x5 = rearrange(x5, '(b t) c h w -> b t c h w', b=B, t=T).squeeze()
+        x5 = rearrange(x5, '(b t) c h w -> b t c h w', b=B, t=T).squeeze(2)
         return x5

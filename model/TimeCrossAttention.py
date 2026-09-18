@@ -75,7 +75,6 @@ class TimeCrossAttention(nn.Module):
     def __init__(self, nhidden=512, embed_time=16, num_heads=1, ff_hidden_dim=2048, dropout=0.1):
         super(TimeCrossAttention, self).__init__()
         self.embed_dim = embed_time
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.nhidden = nhidden
         self.num_heads = num_heads
 
@@ -86,10 +85,17 @@ class TimeCrossAttention(nn.Module):
     
     def time_embedding(self, pos):
         embed_dim = self.embed_dim
-        pe = torch.zeros(pos.shape[0], pos.shape[1], embed_dim)
+        # 初始化位置编码张量：(B, T, embed_dim)，后续用 sin/cos 填充
+        pe = torch.zeros(
+            pos.shape[0], pos.shape[1], embed_dim,
+            device=pos.device, dtype=pos.dtype
+        )
+        # 将时间戳缩放到合适量级并扩维为 (B, T, 1)，供正弦/余弦编码使用
         position = 48. * pos.unsqueeze(2)
-        div_term = torch.exp(torch.arange(0, embed_dim, 2) *
-                             -(np.log(10.0) / embed_dim)).to(self.device)
+        div_term = torch.exp(
+            torch.arange(0, embed_dim, 2, device=pos.device, dtype=pos.dtype)
+            * -(np.log(10.0) / embed_dim)
+        )
         pe[:, :, 0::2] = torch.sin(position * div_term)
         pe[:, :, 1::2] = torch.cos(position * div_term)
         return pe
@@ -98,7 +104,7 @@ class TimeCrossAttention(nn.Module):
         b, t, c, h, w = x.shape
         x = rearrange(x, 'b t c h w -> b t (h w) c')
         
-        query = self.time_embedding(query_time).to(self.device)
+        query = self.time_embedding(query_time)
 
         attn_output = self.att(query, x, x)
         x = x + attn_output  

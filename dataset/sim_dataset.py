@@ -6,44 +6,125 @@ import numpy as np
 from torch.utils.data import Dataset
 import tifffile as tif
 
+from dataset.common import load_environment, resolve_scene_roots
+from dataset.satellite_fusion import (
+    fuse_satellite_sequence,
+    load_scene_base_bgr,
+    parse_satellite_fusion_cfg,
+)
+
 torch.manual_seed(0)
 np.random.seed(0)
 random.seed(0)
+
+
+def _parse_sim_split_cfg(cfg):
+    split_cfg = cfg.get('sim_split') or {}
+    return {
+        'enabled': bool(split_cfg.get('enabled', False)),
+        'val_ratio': float(split_cfg.get('val_ratio', 0.2)),
+        'seed': int(split_cfg.get('seed', 0)),
+    }
+
+
+def _collect_sim_event_keys(root_dirs, fire_dir):
+    event_keys = []
+    for scene_root in root_dirs:
+        fire_root = os.path.join(scene_root, fire_dir)
+        if not os.path.isdir(fire_root):
+            continue
+        for sub_id in sorted(os.listdir(fire_root)):
+            sub_path = os.path.join(fire_root, sub_id)
+            if os.path.isdir(sub_path):
+                event_keys.append(f'{scene_root}_{sub_id}')
+    return event_keys
+
+
+def _select_sim_event_keys(event_keys, split_cfg, training):
+    if not split_cfg['enabled']:
+        return set(event_keys)
+
+    unique_keys = sorted(set(event_keys))
+    if not unique_keys:
+        return set()
+
+    rng = random.Random(split_cfg['seed'])
+    shuffled = unique_keys.copy()
+    rng.shuffle(shuffled)
+
+    if len(shuffled) == 1:
+        val_keys = set() if training else set(shuffled)
+        train_keys = set(shuffled) if training else set()
+        return train_keys if training else val_keys
+
+    val_count = max(1, int(round(len(shuffled) * split_cfg['val_ratio'])))
+    val_count = min(val_count, len(shuffled) - 1)
+    val_keys = set(shuffled[:val_count])
+    train_keys = set(shuffled[val_count:])
+    return train_keys if training else val_keys
+
 
 class SimFireDataset(Dataset):
 
     def __init__(self, cfg, training=True):
         self.sample = cfg['input_length'] * 2
-        self.root_dir = cfg['sim_root_dir']
-        self.fire_dir = cfg['train_dir'] if training else cfg['val_dir']
-        self.wxs_dir = cfg['trainwxs_dir'] if training else cfg['valwxs_dir']
+        self.training = training
+        self.split_cfg = _parse_sim_split_cfg(cfg)
+        self.root_dir = resolve_scene_roots(
+            cfg['sim_root_dir'],
+            [cfg['train_dir'], cfg['val_dir'], cfg['trainwxs_dir'],
+             cfg['valwxs_dir'], cfg['topo_dir'], cfg['vege_dir'], cfg['fuel_dir']],
+        )
+        if self.split_cfg['enabled']:
+            self.fire_dir = cfg['train_dir']
+            self.wxs_dir = cfg['trainwxs_dir']
+        else:
+            self.fire_dir = cfg['train_dir'] if training else cfg['val_dir']
+            self.wxs_dir = cfg['trainwxs_dir'] if training else cfg['valwxs_dir']
         self.topo_dir = cfg['topo_dir']
         self.vege_dir = cfg['vege_dir']
         self.fuel_dir = cfg['fuel_dir']
-        self.sate_dir = cfg['sate_dir']
+        self.satellite_file = cfg['sim_satellite_file']
         self.reverse = cfg['reverse']
         self.num_workers = cfg['num_workers']
         self.topo = {}
         self.vege = {}
         self.fuel = {}
         self.img_size = cfg['img_size']
-        self.indices_of_degree_features = [2]
-        self.vege_indices = [0, 1, 2, 3, 4]
-        self.fuel_indices = [1]  
-        self.vege_one_hot_matrices = {index: torch.eye(cfg['vege_classes'][index]) for index in range(0,len(self.vege_indices))}
-        self.fuel_one_hot_matrices = {index: torch.eye(cfg['fuel_classes'][index]) for index in range(0,len(self.fuel_indices))}
-        
-        self.topo_means, self.topo_stds = self.compute_means_stds(self.topo_dir, self.indices_of_degree_features)
-        self.vege_means, self.vege_stds = self.compute_means_stds(self.vege_dir, self.vege_indices)
-        self.fuel_means, self.fuel_stds = self.compute_means_stds(self.fuel_dir, self.fuel_indices)
+        self.fusion_cfg = parse_satellite_fusion_cfg(cfg)
+        self.satellite = {}
+        self.satellite_base = {}
 
+        valid_root_dir = []
         for rd in self.root_dir:
-            topo = self.get_landfire_modality(rd, self.topo_dir, self.topo_means, self.topo_stds, apply_sin_indices=self.indices_of_degree_features)
-            vege = self.get_landfire_modality(rd, self.vege_dir, self.vege_means, self.vege_stds, indices=self.vege_indices, one_hot_matrices=self.vege_one_hot_matrices)
-            fuel = self.get_landfire_modality(rd, self.fuel_dir, self.fuel_means, self.fuel_stds, indices=self.fuel_indices, one_hot_matrices=self.fuel_one_hot_matrices)
+            satellite_path = os.path.join(rd, self.satellite_file)
+            if not os.path.isfile(satellite_path):
+                print(f"Warning: skipping scene with missing satellite image: {satellite_path}")
+                continue
+            if cv2.imread(satellite_path) is None:
+                print(f"Warning: skipping scene with unreadable satellite image: {satellite_path}")
+                continue
+
+            topo, vege, fuel = load_environment(
+                rd, self.topo_dir, self.vege_dir, self.fuel_dir, self.img_size
+            )
             self.topo[f'{rd}'] = topo
             self.vege[f'{rd}'] = vege
             self.fuel[f'{rd}'] = fuel
+            if self.fusion_cfg.enabled:
+                self.satellite_base[f'{rd}'] = load_scene_base_bgr(
+                    satellite_path, self.img_size, self.fusion_cfg
+                )
+            else:
+                self.satellite[f'{rd}'] = self.process_image(satellite_path, gray=False).float()
+            valid_root_dir.append(rd)
+
+        self.root_dir = valid_root_dir
+        if not self.root_dir:
+            raise FileNotFoundError(
+                "no valid simulation scenes found; each scene needs a readable "
+                f"{self.satellite_file}"
+            )
 
         self.fire_path = []
         self.target_path = []
@@ -52,45 +133,70 @@ class SimFireDataset(Dataset):
         self.wxs_value = []
         self.time_steps = []
 
-        wxs_dict = self.read_wxs(self.root_dir, self.wxs_dir)     
-        
-        for rd in self.root_dir:
-            for root, dirs, files in os.walk(os.path.join(rd,self.fire_dir)):
-                if root == os.path.join(rd,self.fire_dir):
-                    continue
-                else:
-                    length = len(files)
-                    i = os.path.basename(root)[3:][:-12]
-                    sequence = self.extract_sequences(1, length, self.sample, reverse=self.reverse)
-                    for s in sequence:
-                        self.time_steps.append(self.normalize_timestamps(1, length, s))
-                        ind = int(len(s) / 2)
-                        input_sequence = s[:ind]
-                        output_sequence = s[ind:]
-                        input_path = []
-                        input_wxs = []
-                        out_path = []
-                        sate_path = []
-                        flag = -1
-                        for ind, line_sequence in enumerate(input_sequence):
-                            f = os.path.join(root, 'out' + str(line_sequence) + '.jpg')   
-                            o = os.path.join(root, 'out' + str(output_sequence[ind]) + '.jpg') 
-                            s_path = os.path.join(rd, self.sate_dir, os.path.basename(root), 'out' + str(line_sequence) + '.jpg')                                       
-                            key = f'{rd}_{i}_{line_sequence}'
-                            if wxs_dict[key][0] == '#':
-                                flag += 1
-                            input_wxs.append(wxs_dict[key])
-                            input_path.append(f) 
-                            out_path.append(o)
-                            sate_path.append(s_path)
+        allowed_events = _select_sim_event_keys(
+            _collect_sim_event_keys(self.root_dir, self.fire_dir),
+            self.split_cfg,
+            training,
+        )
+        wxs_dict = self.read_wxs(self.root_dir, self.wxs_dir)
 
-                        if flag == -1:
-                            self.fire_path.append(input_path) 
-                            self.target_path.append(out_path)
-                            self.fire_name.append(f'{rd}')
-                            self.wxs_value.append(input_wxs)
-                            self.sate_path.append(sate_path)
-                        flag = -1
+        for rd in self.root_dir:
+            fire_root = os.path.join(rd, self.fire_dir)
+            for sub_id in sorted(os.listdir(fire_root)):
+                root = os.path.join(fire_root, sub_id)
+                if not os.path.isdir(root):
+                    continue
+                event_key = f'{rd}_{sub_id}'
+                if event_key not in allowed_events:
+                    continue
+
+                files = [
+                    name for name in os.listdir(root)
+                    if name.lower().endswith('.jpg')
+                ]
+                length = len(files)
+                if length <= 0:
+                    continue
+
+                sequence = self.extract_sequences(1, length, self.sample, reverse=self.reverse)
+                for s in sequence:
+                    time_steps = self.normalize_timestamps(1, length, s)
+                    ind = int(len(s) / 2)
+                    input_sequence = s[:ind]
+                    output_sequence = s[ind:]
+                    input_path = []
+                    input_wxs = []
+                    out_path = []
+                    sate_path = []
+                    flag = -1
+                    for ind, line_sequence in enumerate(input_sequence):
+                        f = os.path.join(root, 'out' + str(line_sequence) + '.jpg')
+                        o = os.path.join(root, 'out' + str(output_sequence[ind]) + '.jpg')
+                        key = f'{rd}_{sub_id}_{line_sequence}'
+                        if wxs_dict[key][0] == '#':
+                            flag += 1
+                        input_wxs.append(wxs_dict[key])
+                        input_path.append(f)
+                        out_path.append(o)
+
+                    if flag == -1:
+                        self.time_steps.append(time_steps)
+                        self.fire_path.append(input_path)
+                        self.target_path.append(out_path)
+                        self.fire_name.append(f'{rd}')
+                        self.wxs_value.append(input_wxs)
+                        self.sate_path.append([])
+                    flag = -1
+
+        split_name = 'train' if training else 'val'
+        if self.split_cfg['enabled']:
+            print(
+                f"SimFireDataset [{split_name}]: "
+                f"{len(allowed_events)} events, {len(self.fire_path)} samples "
+                f"(val_ratio={self.split_cfg['val_ratio']}, seed={self.split_cfg['seed']})"
+            )
+        else:
+            print(f"SimFireDataset [{split_name}]: {len(self.fire_path)} samples (no event split)")
 
     def __len__(self):
         return len(self.fire_path)
@@ -98,7 +204,6 @@ class SimFireDataset(Dataset):
     def __getitem__(self, index): 
         fire_path = self.fire_path[index]       # 输入火场序列各时刻的图像路径列表
         target_path = self.target_path[index]   # 目标火场序列各时刻的图像路径列表
-        sate_path = self.sate_path[index]       # 与输入时刻对应的卫星图像路径列表
         fire_name = self.fire_name[index]       # 场景根目录名，用于索引该场景的静态环境数据
         time_steps = self.time_steps[index]     # 目标时刻的归一化时间戳（相对序列起止时间）
         topo = self.topo[fire_name]
@@ -119,10 +224,21 @@ class SimFireDataset(Dataset):
         output_squence = [self.process_image(file, gray=True) for file in target_path]
         output_squence = torch.cat(output_squence, dim=0).float()
 
-        sate_squence = [self.process_image(file, gray=False) for file in sate_path]
-        sate_squence = torch.cat(sate_squence, dim=0).float()
+        if self.fusion_cfg.enabled:
+            # One base map per scene; fuse it with each input fire mask in fire_path order.
+            sate_squence = fuse_satellite_sequence(
+                self.satellite_base[fire_name],
+                fire_path,
+                self.img_size,
+                self.fusion_cfg,
+                sample_seed=index,
+            )
+        else:
+            sate_squence = self.satellite[fire_name].unsqueeze(0).repeat(
+                input_squence.shape[0], 1, 1, 1
+            )
 
-        return index, input_squence, output_squence, fuel, vege, topo, torch.rand(3,3,256, 256), wxs, torch.tensor(time_steps)
+        return index, input_squence, output_squence, fuel, vege, topo, sate_squence, wxs, torch.tensor(time_steps)
 
     def process_image(self, file_path, gray=True):
         ''' 图像预处理函数，负责把磁盘上的 JPG 读进来，转成模型可用的 PyTorch 张量
@@ -140,7 +256,7 @@ class SimFireDataset(Dataset):
         else:
             # 缩放图像 → 转成 PyTorch 张量 → 调整通道顺序
             img = cv2.resize(img, self.img_size, interpolation=cv2.INTER_NEAREST)
-            img = torch.from_numpy(img).permute(2, 0, 1)
+            img = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
         return img
 
     def get_landfire_modality(self, root_dir, landfire_dir, means, stds, apply_sin_indices=[], indices=[], one_hot_matrices={}):

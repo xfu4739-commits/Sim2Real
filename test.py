@@ -26,6 +26,9 @@ def load_data(cfg):
 
 def initialize_model(cfg, device):
     model = FireTr(cfg['FireTr']).to(device)
+    if not cfg['checkpoint']['checkpoint']:
+        print('Checkpoint loading is disabled; evaluating the initialized model.')
+        return model
     try:
         checkpoint_path = cfg['checkpoint']['checkpoint_path']
         checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -50,13 +53,21 @@ def test(dataloader, model, device, vis_dir, loss_dice, loss_focal):
     count = 0
 
     with torch.no_grad():
-        for batch, (index, wxs, input_firesquence, output_firesquence, landfire, time_steps) in enumerate(dataloader):
-            wxs = wxs.to(device)
+        for batch, data in enumerate(dataloader):
+            (index, input_firesquence, output_firesquence, fuel, vegetation,
+             topography, satellite_images, weather_data, time_steps) = data
             inputs = input_firesquence.to(device)
             targets = output_firesquence.to(device)
-            landfire = landfire.to(device)
+            fuel = fuel.to(device)
+            vegetation = vegetation.to(device)
+            topography = topography.to(device)
+            satellite_images = satellite_images.to(device)
+            weather_data = weather_data.to(device)
             time_steps = time_steps.to(device)
-            pred = model(inputs, landfire, wxs, time_steps)
+            pred = model(
+                inputs, fuel, vegetation, topography,
+                satellite_images, weather_data, time_steps
+            )
             loss = loss_fn(pred, targets, loss_dice, loss_focal)
             val_loss.append(loss.item())
             
@@ -134,4 +145,4 @@ def main():
     iou, f1, auprc = test(test_dataloader, model, device, vis_dir, loss_dice, loss_focal)
 
 if __name__ == '__main__':
-    main() 
+    main()
