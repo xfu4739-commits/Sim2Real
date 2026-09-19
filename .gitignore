@@ -41,9 +41,8 @@ output/
 # Agent / local scratch
 .codex-tmp/
 
-# Local test scripts and artifacts
+# Local test scripts and generated artifacts (root test.py stays tracked)
 test/
-tools/
 
 # IDE / OS
 .idea/

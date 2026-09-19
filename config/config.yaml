@@ -71,3 +71,11 @@ checkpoint:
   checkpoint: False
   checkpoint_path: 'output/models/quick_test/best_iou.pth'
   model_save_path: 'output/models/quick_test'
+  # Full resume: load model + optimizer + scheduler + epoch from last.pth
+  resume: False
+  resume_path: 'output/models/quick_test/last.pth'
+  save_interval: 5        # save epoch_N.pth every N epochs (0 = disable)
+  keep_last_n: 3          # keep only the latest N periodic checkpoints
+
+logging:
+  log_dir: 'output/logs/quick_test'
