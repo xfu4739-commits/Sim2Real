@@ -4,7 +4,9 @@ import shutil
 from collections import Counter
 from pathlib import Path
 
-SIM_FULL = Path(r"C:\Users\10115\Datasets\Sim2Real-Fire\sim_full")
+DATA_ROOT = Path(r"C:/Users/10115/Datasets/Sim2Real-Fire")
+SIM_FULL = DATA_ROOT / "sim_full"
+ARCHIVES_REMAINING = DATA_ROOT / "sim_archives_remaining"
 SOURCE = Path(r"G:/我的云端硬盘")
 LOG = SIM_FULL / "extraction-log.jsonl"
 PATTERN = re.compile(r"\d{4}_\d{5}\.(zip|rar|7z)$", re.I)
@@ -61,6 +63,11 @@ def main():
     print(f"\nfailed + dir exists but no completion marker: {len(unmarked)}")
     if unmarked[:10]:
         print("  examples:", ", ".join(unmarked[:10]))
+
+    if ARCHIVES_REMAINING.exists():
+        copied = sorted(p.name for p in ARCHIVES_REMAINING.iterdir() if p.is_file() and PATTERN.fullmatch(p.name))
+        print(f"\narchives_remaining dir={ARCHIVES_REMAINING}")
+        print(f"copied zips there={len(copied)}")
 
     if SOURCE.exists():
         source_archives = sorted(p.name for p in SOURCE.iterdir() if p.is_file() and PATTERN.fullmatch(p.name))

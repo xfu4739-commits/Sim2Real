@@ -62,3 +62,4 @@ desktop.ini
 # Large local datasets (stored outside repo by default)
 data/
 datasets/
+assets/
