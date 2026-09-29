@@ -127,3 +127,31 @@ To test the trained S2R-FireTr model on the Sim2Real-Fire real-world data:
 3. **Evaluate Model Performance:**
    - After testing, review the output directory to analyze both the quantitative metrics and the qualitative visualizations to assess the model’s performance on real-world fire data.
 
+## Dataset validation
+
+Before training or testing, validate both `sim_full` and `real_full`. The
+validator checks the five modalities described by the paper, the exact files
+and dimensions consumed by this repository, weather rows, frame naming and
+continuity, real image/mask/date pairing, missing files, and image/TIFF
+decodability. It is read-only and writes a JSON report.
+
+Windows PowerShell:
+
+```powershell
+.\tools\validate_dataset_windows.ps1
+```
+
+Linux:
+
+```bash
+chmod +x tools/validate_dataset_linux.sh
+./tools/validate_dataset_linux.sh /data/Sim2Real-Fire full
+```
+
+Validation levels are `structure` (fast, no decoding), `sample` (decode static
+rasters and representative sequence frames), and `full` (decode every file).
+The wrappers default to `full`. Exit code `0` means no hard errors, `1` means
+the dataset has errors, and `2` means the validator could not start. Warnings
+identify paper-level deviations that do not necessarily stop the current
+loader, while errors identify missing or incompatible data.
+
