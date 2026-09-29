@@ -24,7 +24,7 @@ if ($null -eq $Python) {
     $Python = Get-Command py -ErrorAction SilentlyContinue
 }
 if ($null -eq $Python) {
-    throw "未找到 Python。请先安装项目 requirements.txt 中的依赖。"
+    throw "Python not found on PATH (tried 'python' and 'py'). Install dependencies from requirements.txt."
 }
 
 & $Python.Source $Validator `

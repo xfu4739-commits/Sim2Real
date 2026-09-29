@@ -312,7 +312,10 @@ def parse_weather_line(
 ) -> list[str] | None:
     stripped = line.strip()
     if not stripped:
-        results.error("WEATHER_EMPTY_LINE", path, f"第 {line_number} 行为空")
+        if strict_single_space:
+            results.error("WEATHER_EMPTY_LINE", path, f"第 {line_number} 行为空，会破坏模拟帧与天气行号对应")
+        else:
+            results.warning("WEATHER_EMPTY_LINE", path, f"第 {line_number} 行为空，真实数据加载器会忽略")
         return None
     if stripped.startswith("#"):
         results.warning("WEATHER_EXCLUDED", path, f"第 {line_number} 行以 # 开头，会使相关模拟样本被排除")

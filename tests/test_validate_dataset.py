@@ -46,6 +46,21 @@ class DatasetValidatorTest(unittest.TestCase):
         self.assertIsNone(values)
         self.assertEqual(results.issue_counts["ERROR:WEATHER_SPACING"], 1)
 
+    def test_empty_weather_line_only_breaks_simulation_row_alignment(self):
+        sim_results = Results(detail_limit=20)
+        real_results = Results(detail_limit=20)
+
+        self.assertIsNone(
+            parse_weather_line("", Path("sim.txt"), 3, sim_results, strict_single_space=True)
+        )
+        self.assertIsNone(
+            parse_weather_line("", Path("real.txt"), 3, real_results, strict_single_space=False)
+        )
+
+        self.assertEqual(sim_results.issue_counts["ERROR:WEATHER_EMPTY_LINE"], 1)
+        self.assertEqual(real_results.issue_counts["WARNING:WEATHER_EMPTY_LINE"], 1)
+        self.assertEqual(real_results.error_count, 0)
+
     def test_report_detail_limit_does_not_change_total_counts(self):
         results = Results(detail_limit=1)
         path = Path("unused")
