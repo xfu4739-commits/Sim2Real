@@ -59,9 +59,9 @@ def event_record(event: Path, results: Results, valid: bool) -> dict:
     }
 
 
-def audit_sim_scene(scene: Path, rules, decoders) -> dict:
+def audit_sim_scene(scene: Path, rules, decoders, level: str = "full") -> dict:
     base = Results(10000)
-    base_valid = validate_static_maps(scene, rules, base, "full", decoders)
+    base_valid = validate_static_maps(scene, rules, base, level, decoders)
     satellite = scene / rules.sim_satellite_file
     if not satellite.is_file():
         base.error("MISSING_SIM_SATELLITE", satellite, "缺少合成卫星底图")
@@ -81,7 +81,7 @@ def audit_sim_scene(scene: Path, rules, decoders) -> dict:
             base.error("NO_SIM_EVENTS", mask_root, "没有模拟事件子目录")
         for index, event in enumerate(event_dirs, 1):
             event_results = Results(1000)
-            valid = validate_sim_event(scene, event, rules, event_results, "full", decoders)
+            valid = validate_sim_event(scene, event, rules, event_results, level, decoders)
             events.append(event_record(event, event_results, valid))
             if index % 25 == 0 or index == len(event_dirs):
                 print(f"[INFO] 模拟事件进度 {index}/{len(event_dirs)}", flush=True)
