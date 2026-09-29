@@ -23,6 +23,7 @@ def setup(rank, world_size):
 
     acc = torch.accelerator.current_accelerator()
     backend = torch.distributed.get_default_backend_for_device(acc)
+    # 告诉Pytorch，现在有 world_size 个进程，我是第 rank 个，我们用 backend 互相通信
     dist.init_process_group(backend, rank=rank, world_size=world_size)
 
 
