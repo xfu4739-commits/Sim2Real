@@ -70,6 +70,9 @@ class SimFireDataset(Dataset):
         self.sample = cfg['input_length'] * 2
         self.training = training
         self.split_cfg = _parse_sim_split_cfg(cfg)
+        # Dataset materialisation must be identical on every DDP rank. A local
+        # generator avoids inheriting the rank-specific global NumPy seed.
+        self.sequence_rng = np.random.default_rng(self.split_cfg['seed'])
         self.root_dir = resolve_scene_roots(
             cfg['sim_root_dir'],
             [cfg['train_dir'], cfg['val_dir'], cfg['trainwxs_dir'],
@@ -318,7 +321,7 @@ class SimFireDataset(Dataset):
 
     def extract_sequences_interval_random(self, start, end, sample, reverse):
         max_interval = int(np.floor((end - start) * 0.167))
-        intervals = np.random.randint(1, max_interval + 1, size=sample - 1)
+        intervals = self.sequence_rng.integers(1, max_interval + 1, size=sample - 1)
         intervals = np.insert(intervals, 0, 0).cumsum()
         if intervals[-1] > (end - start):
             return None

@@ -1,15 +1,10 @@
 """On-the-fly satellite fusion for SimFireDataset."""
 
 from dataclasses import dataclass
-from importlib.util import module_from_spec, spec_from_file_location
-from pathlib import Path
 
 import torch
 
-_FUSE_PATH = Path(__file__).resolve().parents[1] / "test" / "fusion" / "fuse_satellite.py"
-_spec = spec_from_file_location("fuse_satellite", _FUSE_PATH)
-_fuse = module_from_spec(_spec)
-_spec.loader.exec_module(_fuse)
+from dataset import satellite_fusion_ops as _fuse
 
 
 @dataclass

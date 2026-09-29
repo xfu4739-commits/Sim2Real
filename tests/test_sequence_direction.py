@@ -18,7 +18,7 @@ def _strictly_decreasing(values):
 class SequenceDirectionTest(unittest.TestCase):
     def test_simulation_forecast_sequence_runs_earlier_to_later(self):
         dataset = object.__new__(SimFireDataset)
-        np.random.seed(7)
+        dataset.sequence_rng = np.random.default_rng(7)
 
         sequence = dataset.extract_sequences_interval_random(1, 100, 6, reverse=False)
 
@@ -28,7 +28,7 @@ class SequenceDirectionTest(unittest.TestCase):
 
     def test_simulation_backtracking_sequence_runs_later_to_earlier(self):
         dataset = object.__new__(SimFireDataset)
-        np.random.seed(7)
+        dataset.sequence_rng = np.random.default_rng(7)
 
         sequence = dataset.extract_sequences_interval_random(1, 100, 6, reverse=True)
 
@@ -53,6 +53,25 @@ class SequenceDirectionTest(unittest.TestCase):
         self.assertTrue(_strictly_increasing(forecast_times))
         self.assertTrue(_strictly_decreasing(backtrack))
         self.assertTrue(_strictly_decreasing(backtrack_times))
+
+    def test_simulation_sequence_is_independent_of_rank_global_seed(self):
+        rank_zero = object.__new__(SimFireDataset)
+        rank_one = object.__new__(SimFireDataset)
+        rank_zero.sequence_rng = np.random.default_rng(12345)
+        rank_one.sequence_rng = np.random.default_rng(12345)
+
+        np.random.seed(12345)
+        zero_sequences = [
+            rank_zero.extract_sequences_interval_random(1, 100, 6, reverse=True)
+            for _ in range(20)
+        ]
+        np.random.seed(12346)
+        one_sequences = [
+            rank_one.extract_sequences_interval_random(1, 100, 6, reverse=True)
+            for _ in range(20)
+        ]
+
+        self.assertEqual(zero_sequences, one_sequences)
 
 
 if __name__ == "__main__":
