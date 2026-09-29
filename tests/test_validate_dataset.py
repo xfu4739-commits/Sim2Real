@@ -4,6 +4,7 @@ from pathlib import Path
 from tools.validate_dataset import (
     Results,
     date_token,
+    load_rules,
     parse_weather_line,
     simulation_can_form_sequence,
 )
@@ -53,6 +54,15 @@ class DatasetValidatorTest(unittest.TestCase):
 
         self.assertEqual(results.error_count, 2)
         self.assertEqual(len(results.issues), 1)
+
+    def test_current_config_matches_environment_channel_count(self):
+        results = Results(detail_limit=20)
+        config_path = Path(__file__).resolve().parents[1] / "config" / "config.yaml"
+
+        rules = load_rules(config_path, results)
+
+        self.assertEqual(rules.modal_channel, 29)
+        self.assertEqual(results.error_count, 0)
 
 
 if __name__ == "__main__":

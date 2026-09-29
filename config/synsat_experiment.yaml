@@ -26,6 +26,7 @@ dataset:
   reverse: true
   num_classes: 2
   num_workers: 4
+  environment_cache_size: 8
   sim_split:
     enabled: true
     val_ratio: 0.2
@@ -42,7 +43,9 @@ FireTr:
     head_dim: 32
     window_size: 8
     relative_pos_embedding: true
-    modal_channel: 28
+    # topography=4 (aspect sin/cos), vegetation=6, fuel=10, RGB frames=9
+    modal_channel: 29
+    environment_category_cardinality: 65537
   Spatial: {embed_dim: 384, num_heads: 4, hidden_dim: 512}
   Temporal: {embed_dim: 384, num_heads: 4, hidden_dim: 512}
   Time: {embed_dim: 384, num_heads: 4, hidden_dim: 512}

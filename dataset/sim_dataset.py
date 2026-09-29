@@ -4,9 +4,12 @@ import torch
 import random
 import numpy as np
 from torch.utils.data import Dataset
-import tifffile as tif
 
-from dataset.common import load_environment, resolve_scene_roots
+from dataset.common import (
+    EnvironmentRasterCache,
+    filter_complete_environment_scenes,
+    resolve_scene_roots,
+)
 from dataset.satellite_fusion import (
     fuse_satellite_sequence,
     load_scene_base_bgr,
@@ -90,13 +93,21 @@ class SimFireDataset(Dataset):
         self.satellite_file = cfg['sim_satellite_file']
         self.reverse = cfg['reverse']
         self.num_workers = cfg['num_workers']
-        self.topo = {}
-        self.vege = {}
-        self.fuel = {}
         self.img_size = cfg['img_size']
         self.fusion_cfg = parse_satellite_fusion_cfg(cfg)
         self.satellite = {}
         self.satellite_base = {}
+
+        self.root_dir = filter_complete_environment_scenes(
+            self.root_dir, self.topo_dir, self.vege_dir, self.fuel_dir
+        )
+        self.environment = EnvironmentRasterCache(
+            self.topo_dir,
+            self.vege_dir,
+            self.fuel_dir,
+            self.img_size,
+            max_scenes=cfg.get('environment_cache_size', 8),
+        )
 
         valid_root_dir = []
         for rd in self.root_dir:
@@ -108,12 +119,6 @@ class SimFireDataset(Dataset):
                 print(f"Warning: skipping scene with unreadable satellite image: {satellite_path}")
                 continue
 
-            topo, vege, fuel = load_environment(
-                rd, self.topo_dir, self.vege_dir, self.fuel_dir, self.img_size
-            )
-            self.topo[f'{rd}'] = topo
-            self.vege[f'{rd}'] = vege
-            self.fuel[f'{rd}'] = fuel
             if self.fusion_cfg.enabled:
                 self.satellite_base[f'{rd}'] = load_scene_base_bgr(
                     satellite_path, self.img_size, self.fusion_cfg
@@ -209,9 +214,7 @@ class SimFireDataset(Dataset):
         target_path = self.target_path[index]   # 目标火场序列各时刻的图像路径列表
         fire_name = self.fire_name[index]       # 场景根目录名，用于索引该场景的静态环境数据
         time_steps = self.time_steps[index]     # 目标时刻的归一化时间戳（相对序列起止时间）
-        topo = self.topo[fire_name]
-        vege = self.vege[fire_name]
-        fuel = self.fuel[fire_name]
+        topo, vege, fuel = self.environment.get(fire_name)
         
         wxs_value = self.wxs_value[index]
         for i, wxs in enumerate(wxs_value):
@@ -261,51 +264,6 @@ class SimFireDataset(Dataset):
             img = cv2.resize(img, self.img_size, interpolation=cv2.INTER_NEAREST)
             img = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
         return img
-
-    def get_landfire_modality(self, root_dir, landfire_dir, means, stds, apply_sin_indices=[], indices=[], one_hot_matrices={}):
-        file_names = os.listdir(os.path.join(root_dir, landfire_dir))
-        modalities = []
-        
-        for i, file in enumerate(file_names):
-            apply_sin = i in apply_sin_indices
-            modalities.append(self.read_and_process_landfire_file(os.path.join(root_dir, landfire_dir), file, means, stds, apply_sin))
-        
-        modalities = torch.cat(modalities, dim=0).float()
-
-        if indices:
-            modalities = self.process_land_cover(modalities, indices, one_hot_matrices)
-
-        return modalities
-
-    def read_and_process_landfire_file(self, path, file, means, stds, apply_sin=False):
-        file_path = os.path.join(path, file)
-        try:
-            lf = tif.imread(file_path)
-            lf = cv2.resize(lf, self.img_size, interpolation=cv2.INTER_NEAREST)
-            lf = torch.from_numpy(lf).unsqueeze(0).float()
-
-            if apply_sin:
-                lf = torch.sin(torch.deg2rad(lf))
-
-            for i in range(lf.shape[0]): 
-                lf[i] = (lf[i] - means[i]) / stds[i]
-
-            return lf
-        except IOError:
-            print(f"Open ERROR!: {file_path}")
-            return torch.zeros((1, *self.img_size))
-
-    def process_land_cover(self, lf, indices, one_hot_matrices):
-        one_hot_encoded_tensors = []
-        for i, index in enumerate(indices):
-            new_shape = (lf.shape[1], lf.shape[2], one_hot_matrices[i].shape[0])
-            landcover_classes_flattened = lf[index, ...].long().flatten() - 1
-            landcover_encoding = one_hot_matrices[i][landcover_classes_flattened].reshape(new_shape).permute(2, 0, 1)
-            one_hot_encoded_tensors.append(landcover_encoding)
-        all_one_hot_encoded = torch.cat(one_hot_encoded_tensors, dim=0)
-        remaining_features = lf[len(indices):, ...] if len(indices) < lf.shape[0] else None
-        lf = torch.cat([all_one_hot_encoded, remaining_features], dim=0)
-        return lf
 
     def extract_sequences(self, start, end, sample, u_interval=0.167, reverse=True):
         if end - start <= 0:
@@ -358,28 +316,3 @@ class SimFireDataset(Dataset):
         normalized_timestamps = (timestamps - start_time) / (end_time - start_time)
         normalized_timestamps = np.clip(normalized_timestamps, 0, 1)
         return normalized_timestamps[3:].tolist()
-
-
-    def compute_means_stds(self, modality_dir, indices_to_exclude):
-        all_data = []
-        for rd in self.root_dir:
-            for root, dirs, files in os.walk(os.path.join(rd, modality_dir)):
-                for file in files:
-                    if file.endswith(".tif"):
-                        file_path = os.path.join(root, file)
-                        try:
-                            lf = tif.imread(file_path)
-                            lf = cv2.resize(lf, self.img_size, interpolation=cv2.INTER_NEAREST)
-                            all_data.append(lf)
-                        except IOError:
-                            print(f"Open ERROR!: {file_path}")
-
-        all_data = np.stack(all_data, axis=0)
-        means = np.mean(all_data, axis=(1, 2))
-        stds = np.std(all_data, axis=(1, 2))
-        means = np.asarray(means)
-        stds = np.asarray(stds)
-        means[indices_to_exclude] = 0
-        stds[indices_to_exclude] = 1
-
-        return torch.tensor(means), torch.tensor(stds)

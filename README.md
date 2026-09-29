@@ -155,3 +155,12 @@ the dataset has errors, and `2` means the validator could not start. Warnings
 identify paper-level deviations that do not necessarily stop the current
 loader, while errors identify missing or incompatible data.
 
+Environment rasters are processed according to their LANDFIRE semantics:
+continuous canopy/topography values are normalized using valid pixels only,
+aspect is encoded as sine/cosine, and vegetation/fuel class IDs use learned
+per-product embeddings. NoData maps to a reserved zero embedding. Scenes with
+missing required rasters are reported and skipped instead of being silently
+filled with zeros. This changes the spatial encoder input from 28 to 29
+channels, so checkpoints created before this change are intentionally
+incompatible and the model must be retrained.
+
