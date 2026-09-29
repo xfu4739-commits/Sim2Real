@@ -1,15 +1,15 @@
 import os
+import argparse
 import cv2
 import torch
 import numpy as np
 from torch.utils.data import DataLoader
-from torchmetrics import AveragePrecision
 
 from model.S2RFireTr import FireTr
 from dataset.real_dataset import RealFireDataset
 from lib.dice_loss import BinaryDiceLoss
 from lib.focal_loss import BinaryFocalLoss
-from metrics.metrics import SegmentationMetric
+from metrics.metrics import BinaryAUPRCHistogram, SegmentationMetric
 from utils import setup_seed, load_config
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
@@ -25,32 +25,29 @@ def load_data(cfg):
     return test_dataloader
 
 def initialize_model(cfg, device):
-    model = FireTr(cfg['FireTr']).to(device)
     if not cfg['checkpoint']['checkpoint']:
-        print('Checkpoint loading is disabled; evaluating the initialized model.')
-        return model
-    try:
-        checkpoint_path = cfg['checkpoint']['checkpoint_path']
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-        model.load_state_dict(checkpoint, strict=False)
-        print('Loaded model from checkpoint.')
-        return model
-    except IOError:
-        print("Checkpoint ERROR!")
-        return model
+        raise ValueError(
+            'Refusing to evaluate a randomly initialized model: '
+            'set checkpoint.checkpoint=true and provide checkpoint_path.'
+        )
+    checkpoint_path = cfg['checkpoint']['checkpoint_path']
+    if not os.path.isfile(checkpoint_path):
+        raise FileNotFoundError(f'checkpoint not found: {checkpoint_path}')
+    model = FireTr(cfg['FireTr']).to(device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    model.load_state_dict(checkpoint, strict=True)
+    print(f'Loaded model from {checkpoint_path}')
+    return model
 
 def loss_fn(pred, target, dice, focal):
     return dice(pred, target, use_sigmoid=True) + focal(pred, target)
 
 def test(dataloader, model, device, vis_dir, loss_dice, loss_focal):
     model.eval()
-    val_loss = []
+    loss_sum = 0.0
+    sample_count = 0
     metric = SegmentationMetric(2)
-    auprc = AveragePrecision('binary', average='macro')
-    total_auprc = 0
-    total_iou = 0
-    total_f1 = 0
-    count = 0
+    auprc = BinaryAUPRCHistogram(device)
 
     with torch.no_grad():
         for batch, data in enumerate(dataloader):
@@ -69,37 +66,21 @@ def test(dataloader, model, device, vis_dir, loss_dice, loss_focal):
                 satellite_images, weather_data, time_steps
             )
             loss = loss_fn(pred, targets, loss_dice, loss_focal)
-            val_loss.append(loss.item())
-            
+            loss_sum += loss.item() * inputs.shape[0]
+            sample_count += inputs.shape[0]
+
             pred_sigmoid = torch.sigmoid(pred)
+            auprc.update(pred_sigmoid, targets)
             pred_binary = torch.where(pred_sigmoid > 0.5, torch.ones_like(pred_sigmoid), torch.zeros_like(pred_sigmoid))
             pred_sigmoid, pred_binary, targets = pred_sigmoid.cpu().numpy(), pred_binary.cpu().numpy(), targets.cpu().numpy()
             pred_sigmoid, pred_binary, targets = pred_sigmoid.astype(np.float32), pred_binary.astype(np.int32), targets.astype(np.int32)
+            metric.addBatch(pred_binary, targets)
             
             b, t, h, w = pred_binary.shape
             inputs_array = inputs.cpu().numpy()
             
             for i in range(b):
                 for j in range(t):
-                    metric.addBatch(pred_binary[i, j], targets[i, j])
-                    iou = metric.IntersectionOverUnion()[1]   
-                    f1 = metric.f1()   
-                    metric.reset()
-
-                    auprc.update(torch.tensor(pred_sigmoid[i, j]), torch.tensor(targets[i, j]).long())
-                    auprc_value = auprc.compute()
-                    auprc.reset()
-                    
-                    print(f'Batch {batch}, Sample {i}, Time {j}')
-                    print('iou_1: ' + str(iou))
-                    print('f1: ' + str(f1))
-                    print('auprc: ' + str(auprc_value))
-                    
-                    total_iou += iou
-                    total_f1 += f1
-                    total_auprc += auprc_value.item()
-                    count += 1
-
                     name = f'{index[i].item()}_gt_{j+1}.png'
                     file_name = os.path.join(vis_dir, name)
                     img_gt = np.uint8(inputs_array[i, j, :, :] * 255)
@@ -118,10 +99,10 @@ def test(dataloader, model, device, vis_dir, loss_dice, loss_focal):
                     img_pd = np.uint8(img_pd * 255)
                     cv2.imwrite(file_name, img_pd)
             
-    mean_epoch_loss = np.average(val_loss)
-    mean_iou = total_iou / count
-    mean_f1 = total_f1 / count
-    mean_auprc = total_auprc / count
+    mean_epoch_loss = loss_sum / sample_count if sample_count else 0.0
+    mean_iou = float(metric.IntersectionOverUnion()[1])
+    mean_f1 = float(metric.f1())
+    mean_auprc = float(auprc.compute().item())
 
     print('val_loss: ' + str(mean_epoch_loss))
     print('mean_iou: ' + str(mean_iou))
@@ -131,11 +112,14 @@ def test(dataloader, model, device, vis_dir, loss_dice, loss_focal):
     return mean_iou, mean_f1, mean_auprc
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', default='config/config.yaml')
+    args = parser.parse_args()
     setup_seed(12345)
-    cfg = load_config('config/config.yaml')
+    cfg = load_config(args.config)
     device = setup_device()
-    test_dataloader= load_data(cfg)
     model = initialize_model(cfg, device)
+    test_dataloader = load_data(cfg)
     vis_dir = cfg['dataset']['vis_dir']
     if not os.path.exists(vis_dir):
         os.makedirs(vis_dir)

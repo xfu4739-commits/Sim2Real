@@ -1,6 +1,8 @@
 import os
 import sys
 import time
+import argparse
+import math
 from datetime import datetime
 
 import torch
@@ -8,10 +10,9 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 import numpy as np
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Sampler
 from torch.utils.data.distributed import DistributedSampler
 from torch.optim.lr_scheduler import StepLR
-from torchmetrics import AveragePrecision
 from tqdm import tqdm
 
 from model.S2RFireTr import FireTr
@@ -30,11 +31,27 @@ from lib.training_logger import (
     save_checkpoint,
     save_weights_only,
 )
-from metrics.metrics import SegmentationMetric
+from metrics.metrics import BinaryAUPRCHistogram, SegmentationMetric
 from utils import setup_seed, load_config
 from ddp.ddp_setup import setup, cleanup
 
 WORLD_SIZE = 4
+
+
+class DistributedEvalSampler(Sampler):
+    """Partition evaluation data across ranks without padding or duplication."""
+
+    def __init__(self, dataset, num_replicas, rank):
+        self.dataset = dataset
+        self.num_replicas = num_replicas
+        self.rank = rank
+
+    def __iter__(self):
+        return iter(range(self.rank, len(self.dataset), self.num_replicas))
+
+    def __len__(self):
+        remaining = len(self.dataset) - self.rank
+        return 0 if remaining <= 0 else math.ceil(remaining / self.num_replicas)
 
 
 def init_distributed(rank=None, world_size=None):
@@ -68,7 +85,9 @@ def load_data(cfg, rank, world_size):
     train_dataset = SimFireDataset(cfg['dataset'])
     val_dataset = SimFireDataset(cfg['dataset'], training=False)
     train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
-    val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False)
+    val_sampler = DistributedEvalSampler(
+        val_dataset, num_replicas=world_size, rank=rank
+    )
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=cfg['training']['batch_size'],
@@ -186,10 +205,13 @@ def train_loop(dataloader, model, optimizer, device, loss_dice, loss_focal, epoc
 
 def val_loop(dataloader, model, device, loss_dice, loss_focal, epoch, total_epochs, rank):
     model.eval()
-    val_loss, val_dice_loss, val_focal_loss = [], [], []
+    eval_model = model.module if isinstance(model, DDP) else model
+    loss_sum_local = 0.0
+    dice_sum_local = 0.0
+    focal_sum_local = 0.0
+    sample_count_local = 0
     metric = SegmentationMetric(2)
-    auprc = AveragePrecision('binary', average='macro').to(device)
-    auprc_list = []
+    auprc = BinaryAUPRCHistogram(device)
     val_start = time.time()
 
     with torch.no_grad():
@@ -209,18 +231,16 @@ def val_loop(dataloader, model, device, loss_dice, loss_focal, epoch, total_epoc
                 input_squence.to(device), output_squence.to(device), fuel.to(device), vegetation.to(device),
                 topography.to(device), satellite_images.to(device), weather_data.to(device), timestamps.to(device),
             )
-            pred = model(input_squence, fuel, vegetation, topography, satellite_images, weather_data, timestamps)
+            pred = eval_model(input_squence, fuel, vegetation, topography, satellite_images, weather_data, timestamps)
             loss, dice_val, focal_val = compute_losses(pred, output_squence, loss_dice, loss_focal)
-            val_loss.append(loss.item())
-            val_dice_loss.append(dice_val)
-            val_focal_loss.append(focal_val)
+            current_batch = input_squence.shape[0]
+            loss_sum_local += loss.item() * current_batch
+            dice_sum_local += dice_val * current_batch
+            focal_sum_local += focal_val * current_batch
+            sample_count_local += current_batch
 
             pred = torch.sigmoid(pred)
-            auprc.update(pred, output_squence.long())
-            auprc_value = auprc.compute()
-            if not torch.isnan(auprc_value):
-                auprc_list.append(auprc_value.item())
-            auprc.reset()
+            auprc.update(pred, output_squence)
 
             pred = torch.where(pred > 0.5, torch.ones_like(pred), torch.zeros_like(pred))
             pred, output_squence = pred.cpu().numpy(), output_squence.cpu().numpy()
@@ -230,28 +250,28 @@ def val_loop(dataloader, model, device, loss_dice, loss_focal, epoch, total_epoc
                 progress.set_postfix(
                     batch=f'{batch_idx}/{total_batches}',
                     loss=f'{loss.item():.4f}',
-                    avg=f'{np.mean(val_loss):.4f}',
+                    avg=f'{loss_sum_local / max(sample_count_local, 1):.4f}',
                     refresh=False,
                 )
 
-    loss_sum, batch_count = reduce_values([sum(val_loss), len(val_loss)], device)
-    dice_sum, _ = reduce_values([sum(val_dice_loss), len(val_dice_loss)], device)
-    focal_sum, _ = reduce_values([sum(val_focal_loss), len(val_focal_loss)], device)
+    loss_sum, dice_sum, focal_sum, sample_count = reduce_values(
+        [loss_sum_local, dice_sum_local, focal_sum_local, sample_count_local],
+        device,
+    )
 
     confusion = torch.tensor(metric.confusionMatrix, dtype=torch.float64, device=device)
     dist.all_reduce(confusion, op=dist.ReduceOp.SUM)
     metric.confusionMatrix = confusion.cpu().numpy()
 
-    auprc_sum, auprc_count = reduce_values([sum(auprc_list), len(auprc_list)], device)
-    mAp = auprc_sum / auprc_count if auprc_count > 0 else 0.0
+    mAp = float(auprc.compute(sync_dist=True).item())
 
     seg_stats = compute_segmentation_stats(metric)
     metric.reset()
 
     return {
-        'val_loss': loss_sum / batch_count if batch_count > 0 else 0.0,
-        'val_dice_loss': dice_sum / batch_count if batch_count > 0 else 0.0,
-        'val_focal_loss': focal_sum / batch_count if batch_count > 0 else 0.0,
+        'val_loss': loss_sum / sample_count if sample_count > 0 else 0.0,
+        'val_dice_loss': dice_sum / sample_count if sample_count > 0 else 0.0,
+        'val_focal_loss': focal_sum / sample_count if sample_count > 0 else 0.0,
         'auprc': mAp,
         'val_time_sec': time.time() - val_start,
         **seg_stats,
@@ -288,10 +308,10 @@ def save_epoch_checkpoints(model, optimizer, scheduler, epoch, best_metrics, cfg
         prune_old_checkpoints(model_save_path, ckpt_cfg.get('keep_last_n', 3))
 
 
-def main_worker(rank, world_size):
+def main_worker(rank, world_size, config_path):
     setup_seed(12345 + rank)
     rank, world_size, device = init_distributed(rank, world_size)
-    cfg = load_config('config/config.yaml')
+    cfg = load_config(config_path)
 
     ckpt_cfg = cfg['checkpoint']
     log_cfg = cfg.get('logging', {})
@@ -305,7 +325,7 @@ def main_worker(rank, world_size):
 
     logger = None
     if is_main_process(rank):
-        logger = TrainingLogger(log_dir)
+        logger = TrainingLogger(log_dir, config_path=config_path)
         logger.log(f'DDP training on {world_size} GPUs, rank={rank}, device={device}')
 
     train_dataloader, val_dataloader, train_sampler, val_sampler, train_size, val_size = load_data(
@@ -397,12 +417,20 @@ def main_worker(rank, world_size):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', default='config/config.yaml')
+    args = parser.parse_args()
     if 'LOCAL_RANK' in os.environ:
         world_size = int(os.environ.get('WORLD_SIZE', WORLD_SIZE))
         rank = int(os.environ['LOCAL_RANK'])
-        main_worker(rank, world_size)
+        main_worker(rank, world_size, args.config)
     else:
-        mp.spawn(main_worker, args=(WORLD_SIZE,), nprocs=WORLD_SIZE, join=True)
+        mp.spawn(
+            main_worker,
+            args=(WORLD_SIZE, args.config),
+            nprocs=WORLD_SIZE,
+            join=True,
+        )
 
 
 if __name__ == '__main__':

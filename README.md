@@ -98,7 +98,11 @@ To train the S2R-FireTr model on the Sim2Real-Fire simulation data:
 2. **Start Training:**
    - Run the training script with the following command:
    ```sh
-   python train.py --config config.yaml
+   # Fast pipeline check on one small scene
+   python train.py --config config/quick_test.yaml
+
+   # Full synthetic-satellite experiment (not an exact paper reproduction)
+   python train.py --config config/synsat_experiment.yaml
    ```
    - This will start the training process using the simulation data defined in the configuration file. During training, checkpoints will be saved periodically, and training logs will be outputted for monitoring.
 
@@ -113,8 +117,11 @@ To test the trained S2R-FireTr model on the Sim2Real-Fire real-world data:
 2. **Run the Testing Script:**
    - Use the following command to start testing:
    ```sh
-   python test.py --config config.yaml
+   python test.py --config config/synsat_experiment.yaml
    ```
+   Testing requires `checkpoint.checkpoint: true` and an existing
+   `checkpoint.checkpoint_path`; the script refuses to report metrics for a
+   randomly initialized model.
    - The script will load the trained model and evaluate it on the specified real-world data. The results, including performance metrics and visualizations. These visualizations, along with the evaluation metrics, will be stored in the designated output directory for further analysis and presentation.
 
 3. **Evaluate Model Performance:**
