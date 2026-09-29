@@ -169,6 +169,95 @@ def accumulate_issue_counts(sim: dict, real: list[dict]) -> dict[str, int]:
     return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
 
 
+def verify_real_loader(real: list[dict], config_path: Path) -> dict:
+    """Materialise every file-complete sample through the current Dataset."""
+    import torch
+    import yaml
+
+    project_root = str(Path(__file__).resolve().parents[1])
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    from dataset.real_dataset import RealFireDataset
+
+    with config_path.open("r", encoding="utf-8") as stream:
+        cfg = (yaml.safe_load(stream) or {})["dataset"]
+    dataset = RealFireDataset(cfg)
+    file_complete = {item["scene"] for item in real if item["status"] == "complete"}
+    selected = [
+        index for index, scene_path in enumerate(dataset.fire_name)
+        if Path(scene_path).name in file_complete
+    ]
+    expected_shapes = [
+        (3, 256, 256),
+        (3, 256, 256),
+        (10, 256, 256),
+        (6, 256, 256),
+        (4, 256, 256),
+        (3, 3, 256, 256),
+        (3, 10),
+        (3,),
+    ]
+    failures: dict[str, list[dict]] = {}
+    passed = 0
+    for position, index in enumerate(selected, 1):
+        scene_name = Path(dataset.fire_name[index]).name
+        try:
+            item = dataset[index]
+            shapes = [tuple(value.shape) for value in item[1:]]
+            finite = all(torch.isfinite(value).all().item() for value in item[1:])
+            if shapes != expected_shapes or not finite:
+                raise ValueError(f"unexpected shapes={shapes} or finite={finite}")
+            passed += 1
+        except Exception as exc:
+            failures.setdefault(scene_name, []).append({
+                "sample_index": index,
+                "error_type": type(exc).__name__,
+                "message": str(exc),
+            })
+        if position % 50 == 0 or position == len(selected):
+            print(f"[INFO] 真实样本实际加载进度 {position}/{len(selected)}", flush=True)
+
+    for scene in real:
+        scene["file_status"] = scene["status"]
+        if scene["scene"] in failures:
+            scene["status"] = "unusable"
+            scene["runtime_status"] = "failed"
+            scene["runtime_failures"] = failures[scene["scene"]]
+            formerly_usable = list(scene["usable_events"])
+            scene["usable_events"] = []
+            scene["events_usable"] = 0
+            scene["events_unusable"] = scene["events_total"]
+            for event_name in formerly_usable:
+                scene["unusable_events"].append({
+                    "event": event_name,
+                    "usable": False,
+                    "errors": len(failures[scene["scene"]]),
+                    "warnings": 0,
+                    "error_codes": ["RUNTIME_SAMPLE_FAILURE"],
+                    "warning_codes": [],
+                    "issue_counts": {
+                        "ERROR:RUNTIME_SAMPLE_FAILURE": len(failures[scene["scene"]])
+                    },
+                    "issues": [],
+                })
+        elif scene["status"] == "complete":
+            scene["runtime_status"] = "passed"
+            scene["runtime_failures"] = []
+        else:
+            scene["runtime_status"] = "not_selected"
+            scene["runtime_failures"] = []
+
+    return {
+        "dataset_materialized_samples": len(dataset),
+        "file_complete_samples_selected": len(selected),
+        "samples_passed": passed,
+        "samples_failed": sum(len(items) for items in failures.values()),
+        "scenes_failed": len(failures),
+        "failed_scene_names": sorted(failures),
+        "failures": failures,
+    }
+
+
 def write_csvs(output_dir: Path, sim: dict, real: list[dict]) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     with (output_dir / "real_scene_inventory.csv").open("w", encoding="utf-8-sig", newline="") as stream:
@@ -221,6 +310,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", required=True, help="当前项目 YAML 配置")
     parser.add_argument("--output-dir", default="output/data_audit", help="JSON/CSV 输出目录")
     parser.add_argument("--progress-every", type=int, default=25, help="真实场景进度间隔")
+    parser.add_argument(
+        "--reuse-full-report",
+        action="store_true",
+        help="复用 output-dir 中已有的全文件报告，仅重跑当前 Dataset 的逐样本验证",
+    )
     return parser
 
 
@@ -229,56 +323,74 @@ def main(argv: Sequence[str] | None = None) -> int:
     dataset_root = Path(args.dataset_root).expanduser().resolve()
     config_path = Path(args.config).expanduser().resolve()
     output_dir = Path(args.output_dir).expanduser().resolve()
+    report_path = output_dir / "usable_data_report.json"
     setup = Results(100)
     rules = load_rules(config_path, setup)
     if setup.error_count:
         print("[FATAL] 配置校验失败", file=sys.stderr)
         return 2
-    decoders = import_decoders()
-    cv2, _, _ = decoders
-    # GeoTIFF georeferencing and out-of-range NoData tags are irrelevant to
-    # pixel decoding but both backends otherwise print one message per file.
-    # The validator still records actual decode failures in the JSON report.
-    logging.getLogger("tifffile").setLevel(logging.CRITICAL)
-    warnings.filterwarnings("ignore", module="tifffile")
-    if hasattr(cv2, "setLogLevel"):
-        cv2.setLogLevel(0)
+    if args.reuse_full_report:
+        if not report_path.is_file():
+            print(f"[FATAL] 没有可复用的报告: {report_path}", file=sys.stderr)
+            return 2
+        previous = json.loads(report_path.read_text(encoding="utf-8"))
+        sim = previous["simulation"]
+        real = previous["real_scenes"]
+        discovery_issues = previous.get("discovery_issues", [])
+        for scene in real:
+            scene["status"] = scene.get("file_status", scene["status"])
+            scene.pop("file_status", None)
+            scene.pop("runtime_status", None)
+            scene.pop("runtime_failures", None)
+    else:
+        decoders = import_decoders()
+        cv2, _, _ = decoders
+        # GeoTIFF georeferencing and out-of-range NoData tags are irrelevant to
+        # pixel decoding but both backends otherwise print one message per file.
+        # The validator still records actual decode failures in the JSON report.
+        logging.getLogger("tifffile").setLevel(logging.CRITICAL)
+        warnings.filterwarnings("ignore", module="tifffile")
+        if hasattr(cv2, "setLogLevel"):
+            cv2.setLogLevel(0)
 
-    sim_scene = dataset_root / "sim_full" / args.sim_scene
-    if not sim_scene.is_dir():
-        print(f"[FATAL] 模拟场景不存在: {sim_scene}", file=sys.stderr)
-        return 2
-    real_root = dataset_root / "real_full"
-    discovery = Results(1000)
-    real_paths = scene_directories(real_root, "真实", discovery)
+        sim_scene = dataset_root / "sim_full" / args.sim_scene
+        if not sim_scene.is_dir():
+            print(f"[FATAL] 模拟场景不存在: {sim_scene}", file=sys.stderr)
+            return 2
+        real_root = dataset_root / "real_full"
+        discovery = Results(1000)
+        real_paths = scene_directories(real_root, "真实", discovery)
+        discovery_issues = [asdict(issue) for issue in discovery.issues]
 
-    print(f"[INFO] 完整校验模拟场景 {sim_scene.name}", flush=True)
-    sim = audit_sim_scene(sim_scene, rules, decoders)
-    print(f"[INFO] 完整校验全部真实场景，共 {len(real_paths)} 个", flush=True)
-    real: list[dict] = []
-    for index, scene in enumerate(real_paths, 1):
-        try:
-            real.append(audit_real_scene(scene, rules, decoders))
-        except Exception as exc:
-            real.append({
-                "scene": scene.name,
-                "path": str(scene),
-                "status": "unusable",
-                "environment_complete": False,
-                "base_errors": 1,
-                "base_warnings": 0,
-                "base_error_codes": ["VALIDATOR_EXCEPTION"],
-                "base_warning_codes": [],
-                "base_issue_counts": {"ERROR:VALIDATOR_EXCEPTION": 1},
-                "events_total": 0,
-                "events_usable": 0,
-                "events_unusable": 0,
-                "usable_events": [],
-                "unusable_events": [],
-                "exception": repr(exc),
-            })
-        if args.progress_every and (index % args.progress_every == 0 or index == len(real_paths)):
-            print(f"[INFO] 真实场景进度 {index}/{len(real_paths)}", flush=True)
+        print(f"[INFO] 完整校验模拟场景 {sim_scene.name}", flush=True)
+        sim = audit_sim_scene(sim_scene, rules, decoders)
+        print(f"[INFO] 完整校验全部真实场景，共 {len(real_paths)} 个", flush=True)
+        real = []
+        for index, scene in enumerate(real_paths, 1):
+            try:
+                real.append(audit_real_scene(scene, rules, decoders))
+            except Exception as exc:
+                real.append({
+                    "scene": scene.name,
+                    "path": str(scene),
+                    "status": "unusable",
+                    "environment_complete": False,
+                    "base_errors": 1,
+                    "base_warnings": 0,
+                    "base_error_codes": ["VALIDATOR_EXCEPTION"],
+                    "base_warning_codes": [],
+                    "base_issue_counts": {"ERROR:VALIDATOR_EXCEPTION": 1},
+                    "events_total": 0,
+                    "events_usable": 0,
+                    "events_unusable": 0,
+                    "usable_events": [],
+                    "unusable_events": [],
+                    "exception": repr(exc),
+                })
+            if args.progress_every and (index % args.progress_every == 0 or index == len(real_paths)):
+                print(f"[INFO] 真实场景进度 {index}/{len(real_paths)}", flush=True)
+
+    runtime = verify_real_loader(real, config_path)
 
     summary = {
         "sim_scene_complete_for_training": sim["complete_for_training"],
@@ -292,6 +404,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "real_events_total": sum(item["events_total"] for item in real),
         "real_events_usable": sum(item["events_usable"] for item in real),
         "real_events_unusable": sum(item["events_unusable"] for item in real),
+        "real_samples_materialized": runtime["dataset_materialized_samples"],
+        "real_samples_selected": runtime["file_complete_samples_selected"],
+        "real_samples_usable": runtime["samples_passed"],
+        "real_samples_failed": runtime["samples_failed"],
     }
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -307,11 +423,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "summary": summary,
         "issue_counts": accumulate_issue_counts(sim, real),
         "simulation": sim,
+        "runtime_validation": runtime,
         "real_scenes": real,
-        "discovery_issues": [asdict(issue) for issue in discovery.issues],
+        "discovery_issues": discovery_issues,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
-    report_path = output_dir / "usable_data_report.json"
     report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     write_csvs(output_dir, sim, real)
     print(f"[RESULT] {json.dumps(summary, ensure_ascii=False)}", flush=True)

@@ -177,15 +177,22 @@ class SimFireDataset(Dataset):
                     out_path = []
                     sate_path = []
                     flag = -1
+                    valid_weather = True
                     for ind, line_sequence in enumerate(input_sequence):
                         f = os.path.join(root, 'out' + str(line_sequence) + '.jpg')
                         o = os.path.join(root, 'out' + str(output_sequence[ind]) + '.jpg')
                         key = f'{rd}_{sub_id}_{line_sequence}'
+                        if key not in wxs_dict:
+                            valid_weather = False
+                            break
                         if wxs_dict[key][0] == '#':
                             flag += 1
                         input_wxs.append(wxs_dict[key])
                         input_path.append(f)
                         out_path.append(o)
+
+                    if not valid_weather:
+                        continue
 
                     if flag == -1:
                         self.time_steps.append(time_steps)
