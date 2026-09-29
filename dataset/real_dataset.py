@@ -238,9 +238,20 @@ class RealFireDataset(Dataset):
         return file_lines_dict
 
     def normalize_timestamps(self, timestamps):
-        start_time = timestamps[0]
-        end_time = timestamps[-1]
-        normalized_timestamps = [(timestamp - start_time).total_seconds() / (end_time - start_time).total_seconds() for timestamp in timestamps]
+        # Normalize against chronological bounds rather than sequence order. This
+        # preserves direction: forecast timestamps increase, while backtracking
+        # timestamps decrease. Using the first/last sequence items as the bounds
+        # made both directions increase from 0 to 1 and erased that distinction.
+        start_time = min(timestamps)
+        end_time = max(timestamps)
+        duration = (end_time - start_time).total_seconds()
+        if duration == 0:
+            normalized_timestamps = [0.0 for _ in timestamps]
+        else:
+            normalized_timestamps = [
+                (timestamp - start_time).total_seconds() / duration
+                for timestamp in timestamps
+            ]
         return normalized_timestamps[3:]
 
 

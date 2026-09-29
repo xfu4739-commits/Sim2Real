@@ -323,7 +323,10 @@ class SimFireDataset(Dataset):
         if intervals[-1] > (end - start):
             return None
         if reverse:
-            seq = [end - i for i in intervals[::-1]]
+            # Backtracking must present later source frames before earlier target
+            # frames. Reversing ``intervals`` here would sort the result back into
+            # chronological order and silently turn the task into forecasting.
+            seq = [end - i for i in intervals]
         else:
             seq = [start + i for i in intervals]
 
