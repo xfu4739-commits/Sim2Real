@@ -124,9 +124,10 @@ def compute_segmentation_stats(metric):
 
 
 def build_checkpoint(epoch, model, optimizer, scheduler, best_metrics, cfg):
+    model = model.module if hasattr(model, 'module') else model
     return {
         'epoch': epoch,
-        'model_state_dict': model.module.state_dict(),
+        'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict(),
         'best_iou': best_metrics[0],
@@ -140,7 +141,7 @@ def save_checkpoint(path, checkpoint):
 
 
 def load_checkpoint(path, model, optimizer, scheduler, device):
-    checkpoint = torch.load(path, map_location=device, weights_only=False)
+    checkpoint = torch.load(path, map_location=device, weights_only=True)
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
@@ -150,7 +151,8 @@ def load_checkpoint(path, model, optimizer, scheduler, device):
 
 
 def save_weights_only(path, model):
-    torch.save(model.module.state_dict(), path)
+    model = model.module if hasattr(model, 'module') else model
+    torch.save(model.state_dict(), path)
 
 
 def prune_old_checkpoints(model_save_path, keep_last_n):
@@ -167,7 +169,32 @@ def ensure_dirs(*paths):
         os.makedirs(path, exist_ok=True)
 
 
+def _to_yaml_safe(value):
+    """Coerce torch/packaging version objects and other metadata to plain scalars."""
+    if isinstance(value, dict):
+        return {str(key): _to_yaml_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_yaml_safe(item) for item in value]
+    if value is None:
+        return None
+    # PyYAML SafeDumper only accepts built-in str, not str subclasses (e.g. torch.__version__).
+    if isinstance(value, str):
+        return str(value)
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return float(value)
+    return str(value)
+
+
 def dump_run_info(log_dir, info):
     info_path = os.path.join(log_dir, 'run_info.yaml')
     with open(info_path, 'w', encoding='utf-8') as f:
-        yaml.safe_dump(info, f, allow_unicode=True, sort_keys=False)
+        yaml.safe_dump(
+            _to_yaml_safe(info),
+            f,
+            allow_unicode=True,
+            sort_keys=False,
+        )

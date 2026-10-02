@@ -12,7 +12,8 @@ import tifffile as tif
 # Some released int16 GeoTIFFs store the textual NoData value 32767/32768 in a
 # way that tifffile logs as a cast warning even though pixels decode correctly.
 # Decoding failures still raise exceptions; only noisy metadata warnings hide.
-tif.logger().setLevel(logging.ERROR)
+# Use the standard logger API across old and current tifffile releases.
+logging.getLogger("tifffile").setLevel(logging.ERROR)
 
 
 @dataclass(frozen=True)

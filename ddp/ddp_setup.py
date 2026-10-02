@@ -17,13 +17,43 @@ import torch.distributed as dist
 # For TcpStore, same way as on Linux.
 
 
-def setup(rank, world_size):
-    os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = "12355"
+def _distributed_backend():
+    """Pick a process-group backend compatible with the installed PyTorch build."""
+    # Windows DDP only supports gloo; do not touch torch.accelerator (2.x-only API).
+    if os.name == "nt":
+        return "gloo"
+    if torch.cuda.is_available() and dist.is_nccl_available():
+        return "nccl"
+    return "gloo"
 
-    acc = torch.accelerator.current_accelerator()
-    backend = torch.distributed.get_default_backend_for_device(acc)
-    # 告诉Pytorch，现在有 world_size 个进程，我是第 rank 个，我们用 backend 互相通信
+
+def _windows_file_init_method():
+    init_file = os.environ.get("DDP_INIT_FILE")
+    if not init_file:
+        raise RuntimeError(
+            "On Windows, export a shared DDP_INIT_FILE path before training "
+            "(train.py sets this automatically before mp.spawn)."
+        )
+    normalized = os.path.abspath(init_file).replace("\\", "/")
+    return f"file:///{normalized}"
+
+
+def setup(rank, world_size):
+    os.environ.setdefault("MASTER_ADDR", "localhost")
+    os.environ.setdefault("MASTER_PORT", "12355")
+
+    backend = _distributed_backend()
+    if os.name == "nt":
+        # Avoid TCPStore/libuv rendezvous issues on many Windows PyTorch builds.
+        dist.init_process_group(
+            backend,
+            init_method=_windows_file_init_method(),
+            rank=rank,
+            world_size=world_size,
+        )
+        return
+
+    os.environ.setdefault("TORCH_DISTRIBUTED_USE_LIBUV", "0")
     dist.init_process_group(backend, rank=rank, world_size=world_size)
 
 

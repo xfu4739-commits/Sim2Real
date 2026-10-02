@@ -82,9 +82,37 @@ Here, we present some examples of satellite images with the real fire areas. The
 
 
 ### Install dependencies
-To set up the environment, install the dependencies using the following command:
+The original dependency pins targeted Python 3.7 and PyTorch 1.10 and no
+longer install on current Python. The repository is now verified with Python
+3.13 and PyTorch 2.12.1; Python 3.12 remains the recommended conservative
+choice.
+
+For a CPU-only environment (sufficient for validation and the smoke test):
+
 ```sh
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
+```
+
+For NVIDIA training, install the CUDA build of PyTorch first, then the other
+dependencies. PyTorch 2.12 uses the CUDA 13.0 wheel index:
+
+```sh
+python -m pip uninstall -y torch torchvision
+python -m pip install torch==2.12.1 torchvision==0.27.1 --index-url https://download.pytorch.org/whl/cu130
+python -m pip install -r requirements.txt
+```
+
+Confirm that the selected environment can see the GPU:
+
+```sh
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.device_count())"
+```
+
+Before a long run, execute one real dataset/model optimization step. This is
+read-only with respect to checkpoints and logs:
+
+```sh
+python train.py --config config/quick_test.yaml --smoke-test
 ```
 
 ### Training
@@ -103,6 +131,17 @@ To train the S2R-FireTr model on the Sim2Real-Fire simulation data:
 
    # Full synthetic-satellite experiment (not an exact paper reproduction)
    python train.py --config config/synsat_experiment.yaml
+   ```
+   A normal invocation defaults to one process and also works on CPU. For
+   multi-GPU Linux training, use `torchrun`; on Windows, the local launcher
+   uses Gloo because NCCL is unavailable:
+
+   ```sh
+   # Linux, two GPUs
+   torchrun --standalone --nproc-per-node=2 train.py --config config/synsat_experiment.yaml
+
+   # Windows PowerShell, two local processes
+   python train.py --config config/synsat_experiment.yaml --world-size 2
    ```
    - This will start the training process using the simulation data defined in the configuration file. During training, checkpoints will be saved periodically, and training logs will be outputted for monitoring.
 

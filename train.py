@@ -3,6 +3,7 @@ import sys
 import time
 import argparse
 import math
+import tempfile
 from datetime import datetime
 
 import torch
@@ -35,7 +36,7 @@ from metrics.metrics import BinaryAUPRCHistogram, SegmentationMetric
 from utils import setup_seed, load_config
 from ddp.ddp_setup import setup, cleanup
 
-WORLD_SIZE = 4
+WORLD_SIZE = 1
 
 
 class DistributedEvalSampler(Sampler):
@@ -54,20 +55,33 @@ class DistributedEvalSampler(Sampler):
         return 0 if remaining <= 0 else math.ceil(remaining / self.num_replicas)
 
 
+def _runtime_device(local_rank=0):
+    if torch.cuda.is_available():
+        if local_rank >= torch.cuda.device_count():
+            raise RuntimeError(
+                f'local rank {local_rank} exceeds available CUDA devices '
+                f'({torch.cuda.device_count()})'
+            )
+        torch.cuda.set_device(local_rank)
+        return torch.device(f'cuda:{local_rank}')
+    return torch.device('cpu')
+
+
 def init_distributed(rank=None, world_size=None):
     if 'LOCAL_RANK' in os.environ:
         local_rank = int(os.environ['LOCAL_RANK'])
-        torch.cuda.set_device(local_rank)
+        device = _runtime_device(local_rank)
         if not dist.is_initialized():
-            backend = 'nccl' if torch.cuda.is_available() else 'gloo'
+            backend = 'nccl' if device.type == 'cuda' and os.name != 'nt' else 'gloo'
             dist.init_process_group(backend=backend)
         rank = dist.get_rank()
         world_size = dist.get_world_size()
-        device = torch.device(f'cuda:{local_rank}')
     else:
-        setup(rank, world_size)
-        torch.cuda.set_device(rank)
-        device = torch.device(f'cuda:{rank}')
+        rank = 0 if rank is None else rank
+        world_size = 1 if world_size is None else world_size
+        device = _runtime_device(rank if torch.cuda.is_available() else 0)
+        if world_size > 1:
+            setup(rank, world_size)
     return rank, world_size, device
 
 
@@ -77,11 +91,12 @@ def is_main_process(rank):
 
 def reduce_values(values, device):
     tensor = torch.tensor(values, dtype=torch.float64, device=device)
-    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    if dist.is_initialized():
+        dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
     return tensor.cpu().tolist()
 
 
-def load_data(cfg, rank, world_size):
+def load_data(cfg, rank, world_size, device):
     train_dataset = SimFireDataset(cfg['dataset'])
     val_dataset = SimFireDataset(cfg['dataset'], training=False)
     train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
@@ -93,7 +108,7 @@ def load_data(cfg, rank, world_size):
         batch_size=cfg['training']['batch_size'],
         sampler=train_sampler,
         num_workers=cfg['dataset']['num_workers'],
-        pin_memory=True,
+        pin_memory=device.type == 'cuda',
         drop_last=True,
     )
     val_dataloader = DataLoader(
@@ -101,12 +116,12 @@ def load_data(cfg, rank, world_size):
         batch_size=cfg['training']['batch_size'],
         sampler=val_sampler,
         num_workers=cfg['dataset']['num_workers'],
-        pin_memory=True,
+        pin_memory=device.type == 'cuda',
         drop_last=False,
     )
     if is_main_process(rank):
-        print(f'len of train_dataloader (per GPU): {len(train_dataloader)}')
-        print(f'len of val_dataloader (per GPU): {len(val_dataloader)}')
+        print(f'len of train_dataloader (per process): {len(train_dataloader)}')
+        print(f'len of val_dataloader (per process): {len(val_dataloader)}')
         print(f'global batch size: {cfg["training"]["batch_size"] * world_size}')
     return train_dataloader, val_dataloader, train_sampler, val_sampler, len(train_dataset), len(val_dataset)
 
@@ -119,7 +134,9 @@ def initialize_model(cfg, device, rank):
         model.load_state_dict(checkpoint, strict=False)
         if is_main_process(rank):
             print(f'Loaded pretrained weights from {checkpoint_path}')
-    model = DDP(model, device_ids=[device.index])
+    if dist.is_initialized():
+        device_ids = [device.index] if device.type == 'cuda' else None
+        model = DDP(model, device_ids=device_ids)
     return model
 
 
@@ -260,7 +277,8 @@ def val_loop(dataloader, model, device, loss_dice, loss_focal, epoch, total_epoc
     )
 
     confusion = torch.tensor(metric.confusionMatrix, dtype=torch.float64, device=device)
-    dist.all_reduce(confusion, op=dist.ReduceOp.SUM)
+    if dist.is_initialized():
+        dist.all_reduce(confusion, op=dist.ReduceOp.SUM)
     metric.confusionMatrix = confusion.cpu().numpy()
 
     mAp = float(auprc.compute(sync_dist=True).item())
@@ -326,10 +344,11 @@ def main_worker(rank, world_size, config_path):
     logger = None
     if is_main_process(rank):
         logger = TrainingLogger(log_dir, config_path=config_path)
-        logger.log(f'DDP training on {world_size} GPUs, rank={rank}, device={device}')
+        mode = 'DDP' if dist.is_initialized() else 'single process'
+        logger.log(f'{mode} training, world_size={world_size}, rank={rank}, device={device}')
 
     train_dataloader, val_dataloader, train_sampler, val_sampler, train_size, val_size = load_data(
-        cfg, rank, world_size
+        cfg, rank, world_size, device
     )
 
     model = initialize_model(cfg, device, rank)
@@ -340,7 +359,11 @@ def main_worker(rank, world_size, config_path):
     if ckpt_cfg.get('resume', False):
         resume_path = ckpt_cfg['resume_path']
         start_epoch, best_metrics = load_checkpoint(
-            resume_path, model.module, optimizer, scheduler, device
+            resume_path,
+            model.module if isinstance(model, DDP) else model,
+            optimizer,
+            scheduler,
+            device,
         )
         if is_main_process(rank):
             logger.log(f'Resumed from {resume_path} at epoch {start_epoch - 1}')
@@ -353,7 +376,9 @@ def main_worker(rank, world_size, config_path):
     global_batch = per_gpu_batch * world_size
 
     if is_main_process(rank):
-        total_params, trainable_params = count_parameters(model.module)
+        total_params, trainable_params = count_parameters(
+            model.module if isinstance(model, DDP) else model
+        )
         run_info = {
             'run_id': logger.run_id,
             'start_time': logger.start_time.isoformat(),
@@ -416,19 +441,90 @@ def main_worker(rank, world_size, config_path):
         cleanup()
 
 
+def run_smoke_test(config_path):
+    """Run one real forward/backward/update step without writing checkpoints."""
+    setup_seed(12345)
+    device = _runtime_device(0)
+    cfg = load_config(config_path)
+    dataset = SimFireDataset(cfg['dataset'])
+    if len(dataset) == 0:
+        raise RuntimeError('training dataset contains no usable samples')
+
+    (_, input_sequence, output_sequence, fuel, vegetation, topography,
+     satellite_images, weather_data, timestamps) = dataset[0]
+    tensors = (
+        input_sequence, output_sequence, fuel, vegetation, topography,
+        satellite_images, weather_data, timestamps,
+    )
+    (input_sequence, output_sequence, fuel, vegetation, topography,
+     satellite_images, weather_data, timestamps) = (
+        tensor.unsqueeze(0).to(device) for tensor in tensors
+    )
+
+    model = FireTr(cfg['FireTr']).to(device)
+    optimizer, _ = initialize_optimizer_scheduler(model, cfg)
+    optimizer.zero_grad()
+    prediction = model(
+        input_sequence, fuel, vegetation, topography, satellite_images,
+        weather_data, timestamps,
+    )
+    loss, dice_value, focal_value = compute_losses(
+        prediction, output_sequence, BinaryDiceLoss(), BinaryFocalLoss()
+    )
+    if not torch.isfinite(loss):
+        raise RuntimeError(f'smoke-test loss is not finite: {loss.item()}')
+    loss.backward()
+    optimizer.step()
+    print(
+        'Smoke test passed: '
+        f'device={device}, samples={len(dataset)}, output={tuple(prediction.shape)}, '
+        f'loss={loss.item():.6f}, dice={dice_value:.6f}, focal={focal_value:.6f}'
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default='config/config.yaml')
+    parser.add_argument(
+        '--world-size',
+        type=int,
+        default=None,
+        help='number of local training processes; defaults to WORLD_SIZE or 1',
+    )
+    parser.add_argument(
+        '--smoke-test',
+        action='store_true',
+        help='run one dataset/model forward-backward step, then exit without writing outputs',
+    )
     args = parser.parse_args()
+    if args.smoke_test:
+        run_smoke_test(args.config)
+        return
     if 'LOCAL_RANK' in os.environ:
         world_size = int(os.environ.get('WORLD_SIZE', WORLD_SIZE))
         rank = int(os.environ['LOCAL_RANK'])
         main_worker(rank, world_size, args.config)
     else:
+        world_size = args.world_size
+        if world_size is None:
+            world_size = int(os.environ.get('WORLD_SIZE', WORLD_SIZE))
+        if world_size < 1:
+            raise ValueError('--world-size must be at least 1')
+        if torch.cuda.is_available() and world_size > torch.cuda.device_count():
+            raise ValueError(
+                f'world_size={world_size}, but only {torch.cuda.device_count()} CUDA devices are available'
+            )
+        if world_size == 1:
+            main_worker(0, 1, args.config)
+            return
+        init_file = os.path.join(tempfile.gettempdir(), "sim2real_fire_ddp.init")
+        os.environ["DDP_INIT_FILE"] = init_file
+        if os.path.isfile(init_file):
+            os.remove(init_file)
         mp.spawn(
             main_worker,
-            args=(WORLD_SIZE, args.config),
-            nprocs=WORLD_SIZE,
+            args=(world_size, args.config),
+            nprocs=world_size,
             join=True,
         )
 
