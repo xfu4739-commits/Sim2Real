@@ -173,10 +173,14 @@ def _read_raster(path):
         valid = np.ones(array.shape, dtype=bool)
     if nodata is not None:
         valid &= array != nodata
-    else:
-        # Common LANDFIRE sentinels. Only used when GDAL_NODATA is unavailable.
-        for sentinel in (-32768, 32767, -9999):
-            valid &= array != sentinel
+    # Some released rasters have a GDAL_NODATA tag that disagrees with the
+    # signed pixels (for example tag=32768 but pixels=-32768), while others use
+    # -1111 without a tag. These negative values cannot be valid category IDs
+    # or physical inputs, so mask them even when a metadata tag is present.
+    for sentinel in (-32768, -9999, -1111):
+        valid &= array != sentinel
+    if nodata is None:
+        valid &= array != 32767
     return array, valid
 
 

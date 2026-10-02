@@ -145,6 +145,41 @@ To train the S2R-FireTr model on the Sim2Real-Fire simulation data:
    ```
    - This will start the training process using the simulation data defined in the configuration file. During training, checkpoints will be saved periodically, and training logs will be outputted for monitoring.
 
+### Training logs and AutoDL monitoring
+
+Every launch creates an independent timestamped `run_id` directory under both
+the configured log and model roots. A run produces `metrics.csv`,
+`training.log`, `run_info.yaml`, `loss_curves.png`, `metrics_curves.png`, a
+TensorBoard event directory, and its own checkpoints. This prevents a new
+AutoDL job from mixing with or overwriting an earlier experiment.
+When resuming, set `checkpoint.resume_path` to the previous run's explicit
+`.../<run_id>/last.pth`; resumed output is written to a new run directory so
+the original run remains intact.
+
+Start TensorBoard from the repository root on AutoDL:
+
+```sh
+tensorboard --logdir output/logs --host 0.0.0.0 --port 6006
+```
+
+Then expose port 6006 using the AutoDL custom-service/SSH tunnel facility.
+Batch-level CSV logging is optional because a full experiment can contain many
+steps. Configure it and its sampling interval in YAML:
+
+```yaml
+logging:
+  plot_curves: true
+  tensorboard: true
+  save_batch_metrics: false
+  batch_log_interval: 10
+```
+
+To recreate plots from any existing epoch log:
+
+```sh
+python tools/plot_training_history.py output/logs/<experiment>/<run_id>/metrics.csv
+```
+
 ### Testing
 
 To test the trained S2R-FireTr model on the Sim2Real-Fire real-world data:

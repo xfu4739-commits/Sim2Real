@@ -65,3 +65,7 @@ checkpoint:
 
 logging:
   log_dir: 'output/logs/quick_test'
+  plot_curves: true
+  tensorboard: true
+  save_batch_metrics: false
+  batch_log_interval: 10

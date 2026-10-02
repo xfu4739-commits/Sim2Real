@@ -1,6 +1,7 @@
 # Verified together on Windows with Python 3.13. The same versions support
 # Python 3.10-3.12; Python 3.12 is recommended for the broadest tooling support.
 einops==0.8.2
+matplotlib==3.11.0
 numpy==2.4.4
 torch==2.12.1
 torchmetrics==1.9.0
@@ -8,4 +9,5 @@ torchvision==0.27.1
 opencv-python==5.0.0.93
 PyYAML==6.0.3
 tifffile==2026.8.23
+tensorboard==2.20.0
 tqdm==4.68.3

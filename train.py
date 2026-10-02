@@ -25,6 +25,7 @@ from lib.training_logger import (
     build_checkpoint,
     compute_segmentation_stats,
     count_parameters,
+    create_run_id,
     dump_run_info,
     ensure_dirs,
     load_checkpoint,
@@ -153,7 +154,8 @@ def compute_losses(pred, target, dice, focal):
     return total_loss, dice_loss.item(), focal_loss.item()
 
 
-def train_loop(dataloader, model, optimizer, device, loss_dice, loss_focal, epoch, total_epochs, rank, batch_size):
+def train_loop(dataloader, model, optimizer, device, loss_dice, loss_focal,
+               epoch, total_epochs, rank, batch_size, logger=None):
     model.train()
     train_loss, train_dice_loss, train_focal_loss = [], [], []
     total_batches = len(dataloader)
@@ -189,6 +191,20 @@ def train_loop(dataloader, model, optimizer, device, loss_dice, loss_focal, epoc
         if is_main_process(rank):
             batch_time = max(time.time() - batch_start, 1e-6)
             samples_per_sec = batch_size / batch_time
+            if logger is not None:
+                logger.log_batch({
+                    'epoch': epoch,
+                    'batch': batch_idx,
+                    'total_batches': total_batches,
+                    'global_step': (epoch - 1) * total_batches + batch_idx,
+                    'loss': loss.item(),
+                    'dice_loss': dice_val,
+                    'focal_loss': focal_val,
+                    'learning_rate': optimizer.param_groups[0]['lr'],
+                    'batch_time_sec': batch_time,
+                    'samples_per_sec': samples_per_sec,
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                })
             progress.set_postfix(
                 batch=f'{batch_idx}/{total_batches}',
                 loss=f'{loss.item():.4f}',
@@ -333,19 +349,37 @@ def main_worker(rank, world_size, config_path):
 
     ckpt_cfg = cfg['checkpoint']
     log_cfg = cfg.get('logging', {})
-    model_save_path = ckpt_cfg['model_save_path']
-    log_dir = log_cfg.get('log_dir', os.path.join('output/logs', os.path.basename(model_save_path)))
+    base_model_save_path = ckpt_cfg['model_save_path']
+    base_log_dir = log_cfg.get(
+        'log_dir', os.path.join('output/logs', os.path.basename(base_model_save_path))
+    )
+
+    run_id_holder = [create_run_id() if is_main_process(rank) else None]
+    if dist.is_initialized():
+        dist.broadcast_object_list(run_id_holder, src=0)
+    run_id = run_id_holder[0]
+    model_save_path = os.path.join(base_model_save_path, run_id)
+    ckpt_cfg['model_save_path'] = model_save_path
 
     if is_main_process(rank):
-        ensure_dirs(model_save_path, log_dir)
+        ensure_dirs(model_save_path)
     if dist.is_initialized():
         dist.barrier()
 
     logger = None
     if is_main_process(rank):
-        logger = TrainingLogger(log_dir, config_path=config_path)
+        logger = TrainingLogger(
+            base_log_dir,
+            config_path=config_path,
+            run_id=run_id,
+            plot_curves=log_cfg.get('plot_curves', True),
+            save_batch_metrics=log_cfg.get('save_batch_metrics', False),
+            tensorboard=log_cfg.get('tensorboard', True),
+            batch_log_interval=log_cfg.get('batch_log_interval', 10),
+        )
         mode = 'DDP' if dist.is_initialized() else 'single process'
         logger.log(f'{mode} training, world_size={world_size}, rank={rank}, device={device}')
+        logger.log(f'Run outputs: logs={logger.log_dir}, models={model_save_path}')
 
     train_dataloader, val_dataloader, train_sampler, val_sampler, train_size, val_size = load_data(
         cfg, rank, world_size, device
@@ -391,7 +425,7 @@ def main_worker(rank, world_size, config_path):
             'start_epoch': start_epoch,
             'learning_rate': cfg['training']['learning_rate'],
             'model_save_path': model_save_path,
-            'log_dir': log_dir,
+            'log_dir': logger.log_dir,
             'total_params': total_params,
             'trainable_params': trainable_params,
             'pytorch_version': torch.__version__,
@@ -399,7 +433,7 @@ def main_worker(rank, world_size, config_path):
             'gpu_name': torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu',
         }
         logger.log_run_header(run_info)
-        dump_run_info(log_dir, run_info)
+        dump_run_info(logger.log_dir, run_info)
 
     for epoch in range(start_epoch, total_epochs + 1):
         epoch_wall_start = time.time()
@@ -407,7 +441,7 @@ def main_worker(rank, world_size, config_path):
 
         train_metrics = train_loop(
             train_dataloader, model, optimizer, device, loss_dice, loss_focal,
-            epoch, total_epochs, rank, per_gpu_batch,
+            epoch, total_epochs, rank, per_gpu_batch, logger,
         )
         val_metrics = val_loop(
             val_dataloader, model, device, loss_dice, loss_focal, epoch, total_epochs, rank

@@ -67,3 +67,8 @@ checkpoint:
 
 logging:
   log_dir: 'output/logs/synsat'
+  plot_curves: true
+  tensorboard: true
+  # Batch CSV is optional because full runs can contain many steps.
+  save_batch_metrics: false
+  batch_log_interval: 10

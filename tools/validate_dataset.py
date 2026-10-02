@@ -254,7 +254,7 @@ def decode_raster(path: Path, results: Results, decoders) -> tuple[int, int] | N
                 results.warning(
                     "TIFF_NODATA_PRESENT",
                     path,
-                    f"包含 {count} 个 NoData={nodata} 像素；当前 dataset/common.py 未屏蔽它们",
+                    f"包含 {count} 个 NoData={nodata} 像素；加载器会将其映射到保留的 NoData 值",
                 )
         except (TypeError, ValueError):
             results.warning("TIFF_NODATA_TAG", path, f"无法解析 GDAL_NODATA={nodata!r}")

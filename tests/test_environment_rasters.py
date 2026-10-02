@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import numpy as np
 import torch
+import tifffile
 
 from dataset.common import (
     CATEGORY_CARDINALITY,
@@ -13,6 +14,7 @@ from dataset.common import (
     VEGETATION_FILES,
     _encode_categorical,
     _normalize_continuous,
+    _read_raster,
     _scale_percent,
     filter_complete_environment_scenes,
     missing_environment_files,
@@ -21,6 +23,17 @@ from model.S2RFireTr import EnvironmentCategoryEncoder
 
 
 class EnvironmentRasterTest(unittest.TestCase):
+    def test_raster_masks_negative_sentinels_without_matching_nodata_tag(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / 'category.tif'
+            tifffile.imwrite(path, np.array([[1, -1111], [-32768, 2]], dtype=np.int16))
+            array, valid = _read_raster(path)
+
+        self.assertEqual(array.tolist(), [[1, -1111], [-32768, 2]])
+        self.assertEqual(valid.tolist(), [[True, False], [False, True]])
+
     def test_continuous_normalization_ignores_nodata(self):
         array = np.array([[1, 2], [9999, 3]], dtype=np.float32)
         valid = np.array([[True, True], [False, True]])
