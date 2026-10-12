@@ -39,10 +39,19 @@ def _windows_file_init_method():
 
 
 def setup(rank, world_size):
+    """Initialize one process per GPU (torchrun) or a local spawned process."""
+    if dist.is_initialized():
+        return
+
+    backend = _distributed_backend()
+    if "LOCAL_RANK" in os.environ:
+        # torchrun supplies RANK, WORLD_SIZE and rendezvous coordinates.
+        dist.init_process_group(backend=backend, init_method="env://")
+        return
+
     os.environ.setdefault("MASTER_ADDR", "localhost")
     os.environ.setdefault("MASTER_PORT", "12355")
 
-    backend = _distributed_backend()
     if os.name == "nt":
         # Avoid TCPStore/libuv rendezvous issues on many Windows PyTorch builds.
         dist.init_process_group(
@@ -53,9 +62,9 @@ def setup(rank, world_size):
         )
         return
 
-    os.environ.setdefault("TORCH_DISTRIBUTED_USE_LIBUV", "0")
     dist.init_process_group(backend, rank=rank, world_size=world_size)
 
 
 def cleanup():
-    dist.destroy_process_group()
+    if dist.is_initialized():
+        dist.destroy_process_group()

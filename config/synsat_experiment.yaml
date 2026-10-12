@@ -53,7 +53,7 @@ FireTr:
     head_dim: 32
     window_size: 8
     relative_pos_embedding: true
-    modal_channel: 29
+    modal_channel: 23
     environment_category_cardinality: 65537
 
   Spatial:

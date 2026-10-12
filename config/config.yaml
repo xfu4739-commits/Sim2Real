@@ -37,7 +37,7 @@ dataset:
   img_size: [256, 256]
   reverse: true
   num_classes: 2
-  num_workers: 8
+  num_workers: 2
   environment_cache_size: 12
   sim_split:
     enabled: true
@@ -55,14 +55,18 @@ FireTr:
     head_dim: 32
     window_size: 8
     relative_pos_embedding: true
-    modal_channel: 29
+    modal_channel: 23
     environment_category_cardinality: 65537
   Spatial: {embed_dim: 384, num_heads: 4, hidden_dim: 512}
   Temporal: {embed_dim: 384, num_heads: 4, hidden_dim: 512}
   Time: {embed_dim: 384, num_heads: 4, hidden_dim: 512}
 
 training:
-  batch_size: 4
+  # One 32 GB vGPU: keep the microbatch small; four microbatches retain an
+  # effective batch of four without needing four samples resident at once.
+  batch_size: 1
+  gradient_accumulation_steps: 4
+  require_cuda: true
   learning_rate: 0.0001
   epochs: 10
 
@@ -78,6 +82,6 @@ checkpoint:
 logging:
   log_dir: /root/autodl-tmp/Sim2Real-Fire-output/logs/sim_full
   plot_curves: true
-  tensorboard: true
+  tensorboard: false
   save_batch_metrics: true
   batch_log_interval: 10

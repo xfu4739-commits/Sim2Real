@@ -9,6 +9,7 @@ from model.S2RFireTr import FireTr
 from dataset.real_dataset import RealFireDataset
 from lib.dice_loss import BinaryDiceLoss
 from lib.focal_loss import BinaryFocalLoss
+from lib.losses import combined_losses
 from metrics.metrics import BinaryAUPRCHistogram, SegmentationMetric
 from utils import setup_seed, load_config
 
@@ -39,9 +40,6 @@ def initialize_model(cfg, device):
     print(f'Loaded model from {checkpoint_path}')
     return model
 
-def loss_fn(pred, target, dice, focal):
-    return dice(pred, target, use_sigmoid=True) + focal(pred, target)
-
 def test(dataloader, model, device, vis_dir, loss_dice, loss_focal):
     model.eval()
     loss_sum = 0.0
@@ -65,7 +63,7 @@ def test(dataloader, model, device, vis_dir, loss_dice, loss_focal):
                 inputs, fuel, vegetation, topography,
                 satellite_images, weather_data, time_steps
             )
-            loss = loss_fn(pred, targets, loss_dice, loss_focal)
+            loss, _, _ = combined_losses(pred, targets, loss_dice, loss_focal)
             loss_sum += loss.item() * inputs.shape[0]
             sample_count += inputs.shape[0]
 

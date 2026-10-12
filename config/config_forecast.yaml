@@ -58,7 +58,7 @@ FireTr:
     relative_pos_embedding: true
 
     # topography=4、vegetation=6、fuel=10、RGB satellite frames=9
-    modal_channel: 29
+    modal_channel: 23
     environment_category_cardinality: 65537
 
   Spatial:

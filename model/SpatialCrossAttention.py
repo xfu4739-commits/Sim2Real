@@ -1,3 +1,5 @@
+import math
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -36,7 +38,20 @@ class SpatialCrossAttention(nn.Module):
         k = self.k_proj(spatial_information_encoder).view(b, c, -1).permute(0, 2, 1)   
         v = self.v_proj(spatial_information_encoder).view(b, c, -1).permute(0, 2, 1)   
 
-        attn_output, _ = self.mha(q, k, v)   
+        # PyTorch MHA fixes the scale to sqrt(head_dim). Eq. (1) uses the
+        # spatial token count, so use its projection weights with sqrt(H*W).
+        weight, bias = self.mha.in_proj_weight, self.mha.in_proj_bias
+        q = F.linear(q, weight[:c], bias[:c])
+        k = F.linear(k, weight[c:2*c], bias[c:2*c])
+        v = F.linear(v, weight[2*c:], bias[2*c:])
+        head_dim = c // self.num_heads
+        q = q.reshape(b, h * w, self.num_heads, head_dim).transpose(1, 2)
+        k = k.reshape(b, h * w, self.num_heads, head_dim).transpose(1, 2)
+        v = v.reshape(b, h * w, self.num_heads, head_dim).transpose(1, 2)
+        weights = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(h * w)
+        attn_output = torch.matmul(weights.softmax(dim=-1), v)
+        attn_output = attn_output.transpose(1, 2).reshape(b, h * w, c)
+        attn_output = self.mha.out_proj(attn_output)
         attn_output = attn_output.permute(0, 2, 1).view(b, c, h, w)  
 
         attn_output = self.norm1(attn_output.view(b, c, -1).permute(0, 2, 1))   
@@ -48,5 +63,7 @@ class SpatialCrossAttention(nn.Module):
         output = self.norm2(ff_output.view(b, c, -1).permute(0, 2, 1))   
         output = output.permute(0, 2, 1).view(b, c, h, w)   
 
+        # Keep the spatial stream anchored to environmental V. Fire features
+        # act as Q here and enter A directly through the temporal stream.
         output = output + attn_output
         return output

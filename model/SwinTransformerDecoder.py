@@ -1,6 +1,19 @@
 from torch import nn
 from model.SwinTransformer import StageModule, StageModule_up, StageModule_up_final
-from einops import rearrange, repeat
+from einops import rearrange
+
+
+def boundary_source_skip(skip, batch_size, source_steps, target_steps):
+    """Use the observation nearest the prediction boundary for every target."""
+    if skip.shape[0] != batch_size * source_steps:
+        raise ValueError('decoder skip features must contain B*T source frames')
+    source = rearrange(skip, '(b t) c h w -> b t c h w', b=batch_size, t=source_steps)
+    # Both forecast and backtracking datasets place the boundary frame last
+    # in task order. All future/past target steps share this known anchor.
+    boundary = source[:, -1]
+    return boundary[:, None].expand(-1, target_steps, -1, -1, -1).reshape(
+        batch_size * target_steps, *boundary.shape[1:]
+    )
 
 class Decoder(nn.Module):
     def __init__(self, input_channel, hidden_dim, downscaling_factors, layers, heads, head_dim, window_size, relative_pos_embedding):
@@ -21,12 +34,9 @@ class Decoder(nn.Module):
 
     def forward(self, x, res):
         B, T, _, _, _ = x.shape
-        x1 = repeat(res[0], 'b c h w -> b t c h w', t=T)
-        x2 = repeat(res[1], 'b c h w -> b t c h w', t=T)
-
         x = rearrange(x, 'b t c h w -> (b t) c h w')
-        x1 = rearrange(x1, 'b t c h w -> (b t) c h w')
-        x2 = rearrange(x2, 'b t c h w -> (b t) c h w')   
+        x1 = boundary_source_skip(res[0], B, T, T)
+        x2 = boundary_source_skip(res[1], B, T, T)
          
         x3 = self.stage4(x, x2) 
         x4 = self.stage5(x3, x1)                

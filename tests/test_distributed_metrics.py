@@ -1,12 +1,26 @@
 import unittest
 
 import torch
+from torch.utils.data.distributed import DistributedSampler
 
 from metrics.metrics import BinaryAUPRCHistogram
 from train import DistributedEvalSampler
 
 
 class DistributedMetricsTest(unittest.TestCase):
+    def test_train_sampler_has_disjoint_equal_partitions(self):
+        dataset = list(range(11))
+        samplers = [
+            DistributedSampler(dataset, num_replicas=2, rank=rank,
+                               shuffle=True, drop_last=True)
+            for rank in range(2)
+        ]
+        for sampler in samplers:
+            sampler.set_epoch(3)
+        partitions = [list(sampler) for sampler in samplers]
+        self.assertEqual([len(part) for part in partitions], [5, 5])
+        self.assertEqual(len(set(partitions[0] + partitions[1])), 10)
+
     def test_eval_sampler_partitions_without_duplicates_or_padding(self):
         dataset = list(range(10))
         partitions = [

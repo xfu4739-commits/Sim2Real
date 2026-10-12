@@ -54,6 +54,42 @@ class SequenceDirectionTest(unittest.TestCase):
         self.assertTrue(_strictly_decreasing(backtrack))
         self.assertTrue(_strictly_decreasing(backtrack_times))
 
+    def test_sim_and_real_use_the_same_six_frame_time_scale(self):
+        sim = object.__new__(SimFireDataset)
+        real = object.__new__(RealFireDataset)
+        origin = datetime(2024, 1, 1)
+        for sequence, expected in (
+            ([40, 41, 42, 43, 44, 45], [0.6, 0.8, 1.0]),
+            ([45, 44, 43, 42, 41, 40], [0.4, 0.2, 0.0]),
+        ):
+            sim_times = sim.normalize_timestamps(sequence)
+            real_times = real.normalize_timestamps(
+                [origin + timedelta(days=index) for index in sequence]
+            )
+            for actual, desired, real_value in zip(sim_times, expected, real_times):
+                self.assertAlmostEqual(actual, desired)
+                self.assertAlmostEqual(actual, real_value)
+
+        self.assertEqual(sim.normalize_timestamps([40] * 6), [0.0] * 3)
+
+    def test_real_irregular_dates_keep_existing_local_normalization(self):
+        real = object.__new__(RealFireDataset)
+        origin = datetime(2024, 1, 1)
+        # The same relative gaps across two- and twenty-day windows must
+        # retain the real dataset's original six-frame values.
+        for scale in (1, 10):
+            dates = [
+                origin + timedelta(hours=scale * offset)
+                for offset in (0, 4, 8, 12, 24, 48)
+            ]
+            normalized = real.normalize_timestamps(dates)
+            for actual, expected in zip(normalized, (0.25, 0.5, 1.0)):
+                self.assertAlmostEqual(actual, expected)
+
+            reversed_normalized = real.normalize_timestamps(dates[::-1])
+            for actual, expected in zip(reversed_normalized, (1 / 6, 1 / 12, 0.0)):
+                self.assertAlmostEqual(actual, expected)
+
     def test_simulation_sequence_is_independent_of_rank_global_seed(self):
         rank_zero = object.__new__(SimFireDataset)
         rank_one = object.__new__(SimFireDataset)

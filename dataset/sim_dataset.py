@@ -15,6 +15,7 @@ from dataset.satellite_fusion import (
     load_scene_base_bgr,
     parse_satellite_fusion_cfg,
 )
+from dataset.time_normalization import normalize_target_timestamps
 
 torch.manual_seed(0)
 np.random.seed(0)
@@ -168,7 +169,7 @@ class SimFireDataset(Dataset):
 
                 sequence = self.extract_sequences(1, length, self.sample, reverse=self.reverse)
                 for s in sequence:
-                    time_steps = self.normalize_timestamps(1, length, s)
+                    time_steps = self.normalize_timestamps(s)
                     ind = int(len(s) / 2)
                     input_sequence = s[:ind]
                     output_sequence = s[ind:]
@@ -316,10 +317,5 @@ class SimFireDataset(Dataset):
                 print(f"Error reading {wxs_dir}: {e}")
         return file_lines_dict
 
-    def normalize_timestamps(self, start_time, end_time, timestamps):
-        start_time = float(start_time)
-        end_time = float(end_time)
-        timestamps = np.array(timestamps, dtype=float)
-        normalized_timestamps = (timestamps - start_time) / (end_time - start_time)
-        normalized_timestamps = np.clip(normalized_timestamps, 0, 1)
-        return normalized_timestamps[3:].tolist()
+    def normalize_timestamps(self, timestamps):
+        return normalize_target_timestamps(timestamps)

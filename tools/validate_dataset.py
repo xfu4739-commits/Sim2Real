@@ -71,7 +71,7 @@ class Rules:
     sim_satellite_file: str = "satellite_image.png"
     input_length: int = 3
     image_size: tuple[int, int] = (256, 256)
-    modal_channel: int = 29
+    modal_channel: int = 23
 
 
 @dataclass(frozen=True)
@@ -148,13 +148,13 @@ def load_rules(config_path: Path | None, results: Results) -> Rules:
             f"dataset.img_size={image_size}，但 FireTr.img_size={model_image_size}",
         )
 
-    modal_channel = int(encoder.get("modal_channel", 29))
-    expected_channels = 4 + 6 + 10 + input_length * 3
+    modal_channel = int(encoder.get("modal_channel", 23))
+    expected_channels = 4 + 6 + 10 + 3
     if modal_channel != expected_channels:
         results.error(
             "CONFIG_MODAL_CHANNEL",
             config_path,
-            f"modal_channel={modal_channel}，代码按 4+6+10+{input_length}*3 需要 {expected_channels}",
+            f"modal_channel={modal_channel}，逐时刻空间输入按 4+6+10+3 需要 {expected_channels}",
         )
 
     return Rules(

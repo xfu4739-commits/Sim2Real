@@ -68,8 +68,8 @@ FireTr:
     # vegetation=6
     # fuel=10
     # 3 帧 RGB 图像=9
-    # 总通道数=4+6+10+9=29
-    modal_channel: 29
+    # 每个时刻的空间输入通道数=4+6+10+3=23
+    modal_channel: 23
 
     environment_category_cardinality: 65537
 

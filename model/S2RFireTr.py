@@ -88,12 +88,12 @@ class FireTr(nn.Module):
             TOPOGRAPHY_OUTPUT_CHANNELS
             + VEGETATION_OUTPUT_CHANNELS
             + FUEL_OUTPUT_CHANNELS
-            + self.input_length * 3
+            + 3  # one RGB satellite image is paired with each source time
         )
         if self.modal_channel != expected_modal_channel:
             raise ValueError(
                 f"modal_channel must be {expected_modal_channel} for the configured "
-                f"{self.input_length} RGB frames, got {self.modal_channel}"
+                f"one RGB satellite frame per time step, got {self.modal_channel}"
             )
         if category_cardinality < CATEGORY_CARDINALITY:
             raise ValueError(
@@ -112,6 +112,10 @@ class FireTr(nn.Module):
         self.time_embed_dim = cfg['Time']['embed_dim']
         self.time_num_heads = cfg['Time']['num_heads']
         self.time_hidden_dim = cfg['Time']['hidden_dim']
+        # The per-frame Swin encoder shares weights; this embedding preserves
+        # source order even when two observed fire masks are identical.
+        self.source_time_embedding = nn.Embedding(self.input_length, self.spatial_embed_dim)
+        nn.init.normal_(self.source_time_embedding.weight, std=0.02)
 
         self.vegetation_category_encoder = EnvironmentCategoryEncoder(
             VEGETATION_OUTPUT_CHANNELS,
@@ -124,11 +128,11 @@ class FireTr(nn.Module):
             category_cardinality,
         )
 
-        self.sequence_encoder = Encoder(input_channel = self.input_length, hidden_dim = self.hidden_dim, downscaling_factors = self.downscaling_factors, layers = self.layers, heads = self.heads, head_dim = self.head_dim, window_size = self.window_size, relative_pos_embedding = self.relative_pos_embedding)
+        self.sequence_encoder = Encoder(input_channel = 1, hidden_dim = self.hidden_dim, downscaling_factors = self.downscaling_factors, layers = self.layers, heads = self.heads, head_dim = self.head_dim, window_size = self.window_size, relative_pos_embedding = self.relative_pos_embedding)
 
         self.spatial_encoder = Encoder(input_channel = self.modal_channel, hidden_dim = self.hidden_dim, downscaling_factors = self.downscaling_factors, layers = self.layers, heads = self.heads, head_dim = self.head_dim, window_size = self.window_size, relative_pos_embedding = self.relative_pos_embedding)
 
-        self.satellite_encoder = Encoder(input_channel = self.input_length, hidden_dim = self.hidden_dim, downscaling_factors = self.downscaling_factors, layers = self.layers, heads = self.heads, head_dim = self.head_dim, window_size = self.window_size, relative_pos_embedding = self.relative_pos_embedding)
+        self.satellite_encoder = Encoder(input_channel = 3, hidden_dim = self.hidden_dim, downscaling_factors = self.downscaling_factors, layers = self.layers, heads = self.heads, head_dim = self.head_dim, window_size = self.window_size, relative_pos_embedding = self.relative_pos_embedding)
 
         self.spatial_crossattention = SpatialCrossAttention(embed_dim = self.spatial_embed_dim, num_heads = self.spatial_num_heads, ff_hidden_dim = self.spatial_hidden_dim)
         self.temporal_crossattention = TemporalCrossAttention(input_dim = self.input_length, embed_dim=self.temporal_embed_dim, num_heads=self.temporal_num_heads, ff_hidden_dim=self.temporal_hidden_dim, encoder_hidden_dim=self.temporal_hidden_dim)
@@ -148,14 +152,20 @@ class FireTr(nn.Module):
         timestamps: (B, 3) 时间戳
         '''
         B, T, H, W = input_sequence.shape  # (B, 3, 256, 256)
+        if T != self.input_length:
+            raise ValueError(f'expected {self.input_length} source frames, got {T}')
         if satellite_images.shape != (B, T, 3, H, W):
             raise ValueError(
                 "satellite_images must have shape "
                 f"{(B, T, 3, H, W)}, got {tuple(satellite_images.shape)}"
             )
         # 1. 对输入火场序列进行编码，两路交叉注意力共用这个 Query
-        input_sequence_encoder, input_sequence_encoder_list = self.sequence_encoder(input_sequence)
-        fire_query = repeat(input_sequence_encoder, 'b c h w -> b t c h w', t=T)
+        # Preserve the source time axis: each fire frame gets its own encoding.
+        source_frames = rearrange(input_sequence, 'b t h w -> (b t) 1 h w')
+        input_sequence_encoder, input_sequence_encoder_list = self.sequence_encoder(source_frames)
+        fire_query = rearrange(input_sequence_encoder, '(b t) c h w -> b t c h w', b=B, t=T)
+        source_positions = torch.arange(T, device=input_sequence.device)
+        fire_query = fire_query + self.source_time_embedding(source_positions)[None, :, :, None, None]
 
         if topography.shape[1] != TOPOGRAPHY_OUTPUT_CHANNELS:
             raise ValueError(
@@ -167,25 +177,28 @@ class FireTr(nn.Module):
 
         # 2. 论文 Eq. (1) 的空间 K/V 使用 [P, G, F, I]。数据加载器输出
         #    fuel=10, vegetation=6, topography=4（坡向 sin/cos）,
-        #    satellite=T*3=9，共 29 通道。
-        spatial_satellite_images = satellite_images.reshape(B, T * 3, H, W)
+        #    each step uses satellite=3, for 23 channels per step.
+        static_maps = torch.cat([fuel, vegetation, topography], dim=1)
+        static_maps = repeat(static_maps, 'b c h w -> b t c h w', t=T)
         spatial_information = torch.cat(
-            [fuel, vegetation, topography, spatial_satellite_images], dim=1
+            [static_maps, satellite_images], dim=2
         )
-        if spatial_information.shape[1] != self.modal_channel:
+        if spatial_information.shape[2] != self.modal_channel:
             raise ValueError(
                 "spatial modality channel mismatch: "
                 f"config expects {self.modal_channel}, dataset produced "
-                f"{spatial_information.shape[1]} "
+                f"{spatial_information.shape[2]} "
                 f"(fuel={fuel.shape[1]}, vegetation={vegetation.shape[1]}, "
-                f"topography={topography.shape[1]}, satellite={T * 3})"
+                f"topography={topography.shape[1]}, satellite=3)"
             )
+        spatial_information = rearrange(spatial_information, 'b t c h w -> (b t) c h w')
         spatial_information_encoder, _ = self.spatial_encoder(spatial_information)
-        # 3. 空间交叉注意力：Q=火区，K/V=静态环境
-        spatial = self.spatial_crossattention(input_sequence_encoder, spatial_information_encoder)
-        spatial = repeat(spatial, 'b c h w -> b t c h w', t=T)
+        # 3. Spatial attention pairs each fire frame with its spatial context.
+        spatial_query = rearrange(fire_query, 'b t c h w -> (b t) c h w')
+        spatial = self.spatial_crossattention(spatial_query, spatial_information_encoder)
+        spatial = rearrange(spatial, '(b t) c h w -> b t c h w', b=B, t=T)
 
-        temporal_satellite_images = satellite_images.reshape(-1, 3, self.H, self.W)
+        temporal_satellite_images = satellite_images.reshape(B * T, 3, H, W)
         # 4. 对卫星图像按时刻编码
         satellite_images_encoder, _ = self.satellite_encoder(temporal_satellite_images)
         satellite_images_encoder = rearrange(satellite_images_encoder, '(b t) c h w -> b t c h w', b=B, t=T)

@@ -1,6 +1,4 @@
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 import yaml
 import random
@@ -19,6 +17,3 @@ def load_config(config_file):
     except Exception as e:
         print(f"Error loading config file: {e}")
         return None
-
-def loss_fn(pred, target, dice, focal):
-    return dice(pred, target, use_sigmoid=True) + focal(pred, target)

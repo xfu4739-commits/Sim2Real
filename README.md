@@ -115,13 +115,34 @@ read-only with respect to checkpoints and logs:
 python train.py --config config/quick_test.yaml --smoke-test
 ```
 
+For the single 32 GB AutoDL vGPU experiment, `config/config.yaml` uses one
+sample per microbatch and four gradient-accumulation steps (effective batch
+four optimizer samples). BatchNorm still sees one sample per microbatch, so
+this does not exactly reproduce a physical batch of four. It requires CUDA,
+uses two data-loader workers, and writes CSV/PNG logs
+without requiring TensorBoard. First put the simulation scenes at the listed
+`/root/autodl-tmp/...` paths, then run:
+
+```sh
+python train.py --config config/config.yaml --smoke-test
+python train.py --config config/config.yaml
+```
+
+The smoke test exercises the configured batch size and data loader for a full
+four-microbatch optimizer update; it does not test an entire epoch. Training
+checks every configured simulation root before making a new run directory. If
+the server uses different
+paths, edit `dataset.sim_root_dir`, `checkpoint.model_save_path`, and
+`logging.log_dir` first. The real-data root is used for testing, not simulation
+training. Keep enough free data-disk space for the dataset and checkpoints.
+
 ### Training
 
 To train the S2R-FireTr model on the Sim2Real-Fire simulation data:
 
 1. **Configure the Training Parameters:**
    - Open the `config.yaml` file and adjust the training parameters, including learning rate, batch size, number of epochs, and dataset paths.
-   - **Important:** Make sure to update the paths to the simulation data and real-world data in the `config.yaml` file according to your local file structure.
+   - **Important:** Update the simulation data paths for training and the real-world data path for testing to match your local file structure.
 
 2. **Start Training:**
    - Run the training script with the following command:
@@ -137,20 +158,38 @@ To train the S2R-FireTr model on the Sim2Real-Fire simulation data:
    uses Gloo because NCCL is unavailable:
 
    ```sh
-   # Linux, two GPUs
-   torchrun --standalone --nproc-per-node=2 train.py --config config/synsat_experiment.yaml
+   # Linux server, two GPUs (one process per GPU)
+   CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc-per-node=2 train.py --config config/synsat_experiment.yaml
+
+   # Optional: check that both processes can synchronize gradients before training
+   CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc-per-node=2 -m tools.smoke_ddp
 
    # Windows PowerShell, two local processes
    python train.py --config config/synsat_experiment.yaml --world-size 2
    ```
+   In this config, `training.batch_size: 4` means **4 samples per GPU** and
+   an effective global batch of 8. Each GPU receives a separate training
+   partition. Training drops only an incomplete global batch; validation
+   processes every sample exactly once and aggregates metrics across ranks.
+   Only rank 0 writes logs and checkpoints. Check that the two visible GPUs
+   each have enough memory for the configured per-GPU batch size. The per-frame
+   encoders use more memory than the previous channel-stacked model, so reduce
+   `training.batch_size` if a GPU runs out of memory.
    - This will start the training process using the simulation data defined in the configuration file. During training, checkpoints will be saved periodically, and training logs will be outputted for monitoring.
 
 ### Training logs and AutoDL monitoring
 
+Code layout: `train.py` and `test.py` are the execution entry points;
+`lib/losses.py` composes their shared Dice/Focal objective;
+`lib/training_logger.py` handles run logs and checkpoints; `lib/plotting.py`
+contains the plotting functions used by the offline tools in `tools/`.
+`ddp/ddp_setup.py` contains the distributed runtime setup.
+
 Every launch creates an independent timestamped `run_id` directory under both
 the configured log and model roots. A run produces `metrics.csv`,
-`training.log`, `run_info.yaml`, `loss_curves.png`, `metrics_curves.png`, a
-TensorBoard event directory, and its own checkpoints. This prevents a new
+`training.log`, `run_info.yaml`, `loss_curves.png`, `metrics_curves.png`, and
+its own checkpoints. A TensorBoard event directory is also created when
+`logging.tensorboard` is enabled. This prevents a new
 AutoDL job from mixing with or overwriting an earlier experiment.
 When resuming, set `checkpoint.resume_path` to the previous run's explicit
 `.../<run_id>/last.pth`; resumed output is written to a new run directory so
@@ -179,6 +218,30 @@ To recreate plots from any existing epoch log:
 ```sh
 python tools/plot_training_history.py output/logs/<experiment>/<run_id>/metrics.csv
 ```
+
+For detailed fire-mask diagnostics, run a separate checkpoint evaluation. The
+epoch CSV alone cannot recover per-frame or per-event predictions:
+
+```sh
+python tools/plot_fire_diagnostics.py \
+  --config output/logs/<experiment>/<run_id>/config_snapshot.yaml \
+  --checkpoint output/models/<experiment>/<run_id>/best_iou.pth \
+  --output-dir output/diagnostics/<experiment>/<run_id>
+```
+
+Use the config snapshot from the same run so the dataset split and satellite
+fusion match its checkpoint. The script evaluates the validation split at the
+same 0.5 threshold as training validation. It writes `sample_steps.csv`,
+`horizon_metrics.csv`, `event_metrics.csv`, `fire_prevalence.csv`,
+`summary.csv` (global and event-mean IoU), and three PNG figures. These cover per-step foreground IoU/precision/recall, per-event
+IoU distribution and global counts, predicted/true fire area, FP/FN counts,
+forward-time new-fire IoU/recall, and train/validation fire-pixel prevalence.
+For backtracking, "new fire" means pixels added from the reconstructed earlier
+mask to the known later input mask. Empty-ground-truth IoU/recall are undefined
+and appear as `nan` in CSV rather than perfect scores. This is an offline
+analysis and does not alter `train.py` or `test.py`. Repeat `--checkpoint`
+for saved `epoch_*.pth` files to get a checkpoint comparison curve. To see
+every epoch, save and retain one checkpoint per epoch during that run.
 
 ### Testing
 
@@ -234,7 +297,25 @@ continuous canopy/topography values are normalized using valid pixels only,
 aspect is encoded as sine/cosine, and vegetation/fuel class IDs use learned
 per-product embeddings. NoData maps to a reserved zero embedding. Scenes with
 missing required rasters are reported and skipped instead of being silently
-filled with zeros. This changes the spatial encoder input from 28 to 29
-channels, so checkpoints created before this change are intentionally
-incompatible and the model must be retrained.
+filled with zeros. The current model encodes each source time separately and
+uses 23 spatial input channels per time (4 topography, 6 vegetation, 10 fuel,
+3 satellite). Source-frame and decoder skip features retain their time axis;
+temporal attention operates across source times at each spatial location.
+For target regression, the residual follows the target timestamp query. The
+decoder uses the final observed source frame as its skip anchor for every
+target step; this is the frame next to the prediction boundary in both task
+directions.
+This architecture changes the encoder input shapes. Checkpoints trained with
+the older channel-stacked 29-channel model cannot be resumed or evaluated by
+the current model; retrain from scratch and retain the old code for comparing
+older checkpoints.
+
+Only simulation timestamps changed: they previously used the full fire-event
+length and now use the chronological minimum and maximum of the selected six
+frames as 0 and 1. Real-data timestamps already used this six-frame rule, so
+their numeric values are unchanged. Both datasets preserve direction and the
+relative gaps within a window, but discard absolute event age and elapsed
+time: two-day and twenty-day windows with identical relative gaps receive the
+same encoding. Checkpoints trained with the old simulation coordinates do not
+measure this encoding's effect; retrain before comparing results.
 
