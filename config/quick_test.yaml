@@ -1,7 +1,14 @@
 dataset:
-  sim_root_dir: 'C:/Users/10115/Datasets/Sim2Real-Fire/sim_full/0156_00112'
-  real_root_dir: 'C:/Users/10115/Datasets/Sim2Real-Fire/real_full'
-  vis_dir: 'C:/Users/10115/Datasets/Sim2Real-Fire/vis'
+  # 模拟数据：仅使用已经完整校验的 0156_00112 场景
+  sim_root_dir: '/root/autodl-tmp/Sim2Real-Fire-data/sim_full/0156_00112'
+
+  # 真实数据：用于测试
+  real_root_dir: '/root/autodl-tmp/Sim2Real-Fire-data/real_full'
+
+  # 测试可视化输出
+  vis_dir: '/root/autodl-tmp/Sim2Real-Fire-output/vis'
+
+  # 模拟数据目录名称
   train_dir: 'Satellite_Images_Mask'
   val_dir: 'Satellite_Images_Mask'
   trainwxs_dir: 'Weather_Data'
@@ -9,23 +16,36 @@ dataset:
   topo_dir: 'Topography_Map'
   vege_dir: 'Vegetation_Map'
   fuel_dir: 'Fuel_Map'
+
+  # 模拟数据没有公开卫星序列，使用合成卫星图像
   sim_satellite_file: 'satellite_image.png'
+
   satellite_fusion:
     enabled: true
-    style: burn-scar
-    match_radiometry: true
-    hotspots: true
+    style: 'figure2'
+    match_radiometry: false
+    hotspots: false
     alpha: 0.85
     fire_color: [255, 80, 0]
+
+  # 真实数据目录名称
   real_satellite_dir: 'Satellite_Images'
   test_dir: 'Satellite_Images_Mask'
   testwxs_dir: 'Weather_Data'
+
+  # 输入连续三帧
   input_length: 3
   img_size: [256, 256]
   reverse: true
   num_classes: 2
-  num_workers: 4
+
+  # AutoDL 实例有 20 核 CPU
+  num_workers: 8
+
+  # 环境栅格缓存数量
   environment_cache_size: 8
+
+  # 将单个模拟场景内部的数据划分为训练集和验证集
   sim_split:
     enabled: true
     val_ratio: 0.2
@@ -34,6 +54,7 @@ dataset:
 FireTr:
   input_length: 3
   img_size: [256, 256]
+
   Encoder:
     hidden_dim: 96
     downscaling_factors: [4, 2, 2]
@@ -42,30 +63,68 @@ FireTr:
     head_dim: 32
     window_size: 8
     relative_pos_embedding: true
-    # topography=4 (aspect sin/cos), vegetation=6, fuel=10, RGB frames=9
+
+    # topography=4
+    # vegetation=6
+    # fuel=10
+    # 3 帧 RGB 图像=9
+    # 总通道数=4+6+10+9=29
     modal_channel: 29
+
     environment_category_cardinality: 65537
-  Spatial: {embed_dim: 384, num_heads: 4, hidden_dim: 512}
-  Temporal: {embed_dim: 384, num_heads: 4, hidden_dim: 512}
-  Time: {embed_dim: 384, num_heads: 4, hidden_dim: 512}
+
+  Spatial:
+    embed_dim: 384
+    num_heads: 4
+    hidden_dim: 512
+
+  Temporal:
+    embed_dim: 384
+    num_heads: 4
+    hidden_dim: 512
+
+  Time:
+    embed_dim: 384
+    num_heads: 4
+    hidden_dim: 512
 
 training:
+  # 保持论文训练配置
+  # 这里是每张 GPU 的 batch size
   batch_size: 4
   learning_rate: 0.0001
-  epochs: 3
+  epochs: 10
 
 checkpoint:
+  # 是否在训练开始前加载纯模型权重
   checkpoint: false
-  checkpoint_path: 'output/models/quick_test/best_iou.pth'
-  model_save_path: 'output/models/quick_test'
+  checkpoint_path: '/root/autodl-tmp/Sim2Real-Fire-output/models/best_iou.pth'
+
+  # 程序会在此目录下自动创建 run_id 子目录
+  model_save_path: '/root/autodl-tmp/Sim2Real-Fire-output/models'
+
+  # 是否恢复完整训练状态
   resume: false
-  resume_path: 'output/models/quick_test/last.pth'
+  resume_path: '/root/autodl-tmp/Sim2Real-Fire-output/models/last.pth'
+
+  # 每 5 轮额外保存一次检查点
   save_interval: 5
+
+  # 最多保留最近 3 个周期检查点
   keep_last_n: 3
 
 logging:
-  log_dir: 'output/logs/quick_test'
+  # 程序会在此目录下自动创建 run_id 子目录
+  log_dir: '/root/autodl-tmp/Sim2Real-Fire-output/logs'
+
+  # 每轮结束生成曲线图
   plot_curves: true
+
+  # 启用 TensorBoard
   tensorboard: true
-  save_batch_metrics: false
+
+  # 保存 batch 级 loss，便于分析训练震荡
+  save_batch_metrics: true
+
+  # 每 10 个 batch 记录一次
   batch_log_interval: 10

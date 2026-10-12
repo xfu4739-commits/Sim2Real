@@ -25,6 +25,24 @@ class SatelliteFusionDependencyTest(unittest.TestCase):
         self.assertEqual(fused.shape, base.shape)
         self.assertGreater(int(fused[3, 3, 2]), 0)
 
+    def test_figure2_style_ignores_burn_scar_and_config_orange(self):
+        module = importlib.import_module("dataset.satellite_fusion")
+        base = np.full((8, 8, 3), 40, dtype=np.uint8)
+        mask = np.zeros((8, 8), dtype=np.uint8)
+        mask[2:6, 2:6] = 1
+
+        fused = module._fuse.apply_style(
+            base,
+            mask,
+            style="figure2",
+            hotspots=True,
+            fire_color_bgr=(0, 80, 255),
+        )
+
+        self.assertTrue(np.array_equal(fused[3, 3], np.array([10, 111, 189], dtype=np.uint8)))
+        self.assertTrue(np.array_equal(fused[0, 0], base[0, 0]))
+        self.assertTrue(np.array_equal(fused[1, 3], np.array([10, 18, 191], dtype=np.uint8)))
+
 
 if __name__ == "__main__":
     unittest.main()
