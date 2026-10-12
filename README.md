@@ -82,9 +82,37 @@ Here, we present some examples of satellite images with the real fire areas. The
 
 
 ### Install dependencies
-To set up the environment, install the dependencies using the following command:
+The original dependency pins targeted Python 3.7 and PyTorch 1.10 and no
+longer install on current Python. The repository is now verified with Python
+3.13 and PyTorch 2.12.1; Python 3.12 remains the recommended conservative
+choice.
+
+For a CPU-only environment (sufficient for validation and the smoke test):
+
 ```sh
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
+```
+
+For NVIDIA training, install the CUDA build of PyTorch first, then the other
+dependencies. PyTorch 2.12 uses the CUDA 13.0 wheel index:
+
+```sh
+python -m pip uninstall -y torch torchvision
+python -m pip install torch==2.12.1 torchvision==0.27.1 --index-url https://download.pytorch.org/whl/cu130
+python -m pip install -r requirements.txt
+```
+
+Confirm that the selected environment can see the GPU:
+
+```sh
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.device_count())"
+```
+
+Before a long run, execute one real dataset/model optimization step. This is
+read-only with respect to checkpoints and logs:
+
+```sh
+python train.py --config config/quick_test.yaml --smoke-test
 ```
 
 ### Training
@@ -98,9 +126,59 @@ To train the S2R-FireTr model on the Sim2Real-Fire simulation data:
 2. **Start Training:**
    - Run the training script with the following command:
    ```sh
-   python train.py --config config.yaml
+   # Fast pipeline check on one small scene
+   python train.py --config config/quick_test.yaml
+
+   # Full synthetic-satellite experiment (not an exact paper reproduction)
+   python train.py --config config/synsat_experiment.yaml
+   ```
+   A normal invocation defaults to one process and also works on CPU. For
+   multi-GPU Linux training, use `torchrun`; on Windows, the local launcher
+   uses Gloo because NCCL is unavailable:
+
+   ```sh
+   # Linux, two GPUs
+   torchrun --standalone --nproc-per-node=2 train.py --config config/synsat_experiment.yaml
+
+   # Windows PowerShell, two local processes
+   python train.py --config config/synsat_experiment.yaml --world-size 2
    ```
    - This will start the training process using the simulation data defined in the configuration file. During training, checkpoints will be saved periodically, and training logs will be outputted for monitoring.
+
+### Training logs and AutoDL monitoring
+
+Every launch creates an independent timestamped `run_id` directory under both
+the configured log and model roots. A run produces `metrics.csv`,
+`training.log`, `run_info.yaml`, `loss_curves.png`, `metrics_curves.png`, a
+TensorBoard event directory, and its own checkpoints. This prevents a new
+AutoDL job from mixing with or overwriting an earlier experiment.
+When resuming, set `checkpoint.resume_path` to the previous run's explicit
+`.../<run_id>/last.pth`; resumed output is written to a new run directory so
+the original run remains intact.
+
+Start TensorBoard from the repository root on AutoDL:
+
+```sh
+tensorboard --logdir output/logs --host 0.0.0.0 --port 6006
+```
+
+Then expose port 6006 using the AutoDL custom-service/SSH tunnel facility.
+Batch-level CSV logging is optional because a full experiment can contain many
+steps. Configure it and its sampling interval in YAML:
+
+```yaml
+logging:
+  plot_curves: true
+  tensorboard: true
+  save_batch_metrics: false
+  batch_log_interval: 10
+```
+
+To recreate plots from any existing epoch log:
+
+```sh
+python tools/plot_training_history.py output/logs/<experiment>/<run_id>/metrics.csv
+```
 
 ### Testing
 
@@ -113,10 +191,50 @@ To test the trained S2R-FireTr model on the Sim2Real-Fire real-world data:
 2. **Run the Testing Script:**
    - Use the following command to start testing:
    ```sh
-   python test.py --config config.yaml
+   python test.py --config config/synsat_experiment.yaml
    ```
+   Testing requires `checkpoint.checkpoint: true` and an existing
+   `checkpoint.checkpoint_path`; the script refuses to report metrics for a
+   randomly initialized model.
    - The script will load the trained model and evaluate it on the specified real-world data. The results, including performance metrics and visualizations. These visualizations, along with the evaluation metrics, will be stored in the designated output directory for further analysis and presentation.
 
 3. **Evaluate Model Performance:**
    - After testing, review the output directory to analyze both the quantitative metrics and the qualitative visualizations to assess the model’s performance on real-world fire data.
+
+## Dataset validation
+
+Before training or testing, validate both `sim_full` and `real_full`. The
+validator checks the five modalities described by the paper, the exact files
+and dimensions consumed by this repository, weather rows, frame naming and
+continuity, real image/mask/date pairing, missing files, and image/TIFF
+decodability. It is read-only and writes a JSON report.
+
+Windows PowerShell:
+
+```powershell
+.\tools\validate_dataset_windows.ps1
+```
+
+Linux:
+
+```bash
+chmod +x tools/validate_dataset_linux.sh
+./tools/validate_dataset_linux.sh /data/Sim2Real-Fire full
+```
+
+Validation levels are `structure` (fast, no decoding), `sample` (decode static
+rasters and representative sequence frames), and `full` (decode every file).
+The wrappers default to `full`. Exit code `0` means no hard errors, `1` means
+the dataset has errors, and `2` means the validator could not start. Warnings
+identify paper-level deviations that do not necessarily stop the current
+loader, while errors identify missing or incompatible data.
+
+Environment rasters are processed according to their LANDFIRE semantics:
+continuous canopy/topography values are normalized using valid pixels only,
+aspect is encoded as sine/cosine, and vegetation/fuel class IDs use learned
+per-product embeddings. NoData maps to a reserved zero embedding. Scenes with
+missing required rasters are reported and skipped instead of being silently
+filled with zeros. This changes the spatial encoder input from 28 to 29
+channels, so checkpoints created before this change are intentionally
+incompatible and the model must be retrained.
 

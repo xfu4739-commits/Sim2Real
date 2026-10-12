@@ -35,17 +35,24 @@ def demo_basic(rank, world_size):
     labels = torch.randn(20, 5).to(rank)
     loss_fn(outputs, labels).backward()
     optimizer.step()
-
     cleanup()
     print(f"Finished running basic DDP example on rank {rank}.")
 
 
 def run_demo(demo_fn, world_size):
+    '''
+        一次性启动 world_size 个子进程，每个进程各自执行 demo_basic(rank, world_size)
+    '''
+    # mp.spawn 用于启动多个子进程并行执行指定的函数。下面参数含义说明：
+    # demo_fn: 每个子进程要执行的函数，比如这里的 demo_basic
+    # args: 传递给 demo_fn 的参数（不包括 rank，会自动作为第一个参数传入）
+    # nprocs: 要启动的进程数，通常等于 world_size
+    # join: 是否等待所有子进程执行完再返回，True 表示要等待
     mp.spawn(
-        demo_fn,
-        args=(world_size,),
-        nprocs=world_size,
-        join=True,
+        demo_fn,                  # 需要并行执行的函数，每个进程的 rank 会作为第一个参数传入
+        args=(world_size,),       # demo_fn 剩余参数（除了 rank），这里传 world_size
+        nprocs=world_size,        # 并行进程数，等于 world_size
+        join=True,                # 等待所有子进程结束后再返回
     )
 
 

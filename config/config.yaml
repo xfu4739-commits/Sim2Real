@@ -30,6 +30,8 @@ dataset:
   reverse: True
   num_classes: 2
   num_workers: 4
+  # Per DataLoader worker; prevents preloading hundreds of scene rasters.
+  environment_cache_size: 8
   # Split simulation fire events (Satellite_Images_Mask/<sub_id>/) into train/val.
   sim_split:
     enabled: true
@@ -47,8 +49,10 @@ FireTr:
     head_dim: 32
     window_size: 8
     relative_pos_embedding: True
-    # topography=3, vegetation=6, fuel=10, three RGB frames=9: 3+6+10+9=28
-    modal_channel: 28
+    # topography=4 (aspect sin/cos), vegetation=6, fuel=10, RGB frames=9
+    modal_channel: 29
+    # 0 is reserved for NoData; raw LANDFIRE code n is stored as n+1.
+    environment_category_cardinality: 65537
   Spatial:
     embed_dim: 384
     num_heads: 4
@@ -79,3 +83,7 @@ checkpoint:
 
 logging:
   log_dir: 'output/logs/quick_test'
+  plot_curves: true
+  tensorboard: true
+  save_batch_metrics: false
+  batch_log_interval: 10

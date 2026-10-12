@@ -2,11 +2,71 @@ import torch
 import torch.nn as nn
 from einops import rearrange, repeat
 
+from dataset.common import (
+    CATEGORY_CARDINALITY,
+    FUEL_OUTPUT_CHANNELS,
+    TOPOGRAPHY_OUTPUT_CHANNELS,
+    VEGETATION_OUTPUT_CHANNELS,
+)
 from model.SwinTransformerEncoder import Encoder
 from model.SpatialCrossAttention import SpatialCrossAttention
 from model.TemporalCrossAttention import TemporalCrossAttention
 from model.TimeCrossAttention import TimeCrossAttention
 from model.SwinTransformerDecoder import Decoder
+
+
+class EnvironmentCategoryEncoder(nn.Module):
+    """Replace LANDFIRE category IDs with learned scalar embeddings.
+
+    Each raster has its own lookup table, so equal numeric codes in different
+    products do not share semantics. ID 0 is reserved for NoData and remains a
+    fixed zero through ``padding_idx``.
+    """
+
+    def __init__(self, channel_count, categorical_indices, cardinality):
+        super().__init__()
+        self.channel_count = channel_count
+        self.categorical_indices = tuple(categorical_indices)
+        self.index_to_embedding = {
+            channel_index: embedding_index
+            for embedding_index, channel_index in enumerate(self.categorical_indices)
+        }
+        self.embeddings = nn.ModuleList(
+            nn.Embedding(cardinality, 1, padding_idx=0)
+            for _ in self.categorical_indices
+        )
+        for embedding in self.embeddings:
+            # Zero initialization makes categories absent from simulation
+            # training behave like unknown/NoData at real-world inference,
+            # instead of injecting an untrained random value. Seen categories
+            # receive independent gradients and diverge during training.
+            nn.init.zeros_(embedding.weight)
+
+    def forward(self, rasters, name):
+        if rasters.ndim != 4 or rasters.shape[1] != self.channel_count:
+            raise ValueError(
+                f"{name} must have shape (B, {self.channel_count}, H, W), "
+                f"got {tuple(rasters.shape)}"
+            )
+        output = []
+        for channel_index in range(self.channel_count):
+            channel = rasters[:, channel_index]
+            embedding_index = self.index_to_embedding.get(channel_index)
+            if embedding_index is None:
+                output.append(channel)
+                continue
+            rounded = channel.round()
+            if torch.any(channel != rounded):
+                raise ValueError(f"{name} contains a non-integer categorical ID")
+            category_ids = rounded.long()
+            if torch.any(category_ids < 0) or torch.any(
+                category_ids >= self.embeddings[embedding_index].num_embeddings
+            ):
+                raise ValueError(f"{name} contains an out-of-range categorical ID")
+            output.append(
+                self.embeddings[embedding_index](category_ids).squeeze(-1)
+            )
+        return torch.stack(output, dim=1)
 
 class FireTr(nn.Module):
     def __init__(self, cfg):
@@ -21,6 +81,25 @@ class FireTr(nn.Module):
         self.window_size = cfg['Encoder']['window_size']
         self.relative_pos_embedding = cfg['Encoder']['relative_pos_embedding']
         self.modal_channel = cfg['Encoder']['modal_channel']
+        category_cardinality = cfg['Encoder'].get(
+            'environment_category_cardinality', CATEGORY_CARDINALITY
+        )
+        expected_modal_channel = (
+            TOPOGRAPHY_OUTPUT_CHANNELS
+            + VEGETATION_OUTPUT_CHANNELS
+            + FUEL_OUTPUT_CHANNELS
+            + self.input_length * 3
+        )
+        if self.modal_channel != expected_modal_channel:
+            raise ValueError(
+                f"modal_channel must be {expected_modal_channel} for the configured "
+                f"{self.input_length} RGB frames, got {self.modal_channel}"
+            )
+        if category_cardinality < CATEGORY_CARDINALITY:
+            raise ValueError(
+                "environment_category_cardinality must be at least "
+                f"{CATEGORY_CARDINALITY}, got {category_cardinality}"
+            )
 
         self.spatial_embed_dim = cfg['Spatial']['embed_dim']
         self.spatial_num_heads = cfg['Spatial']['num_heads']
@@ -34,6 +113,16 @@ class FireTr(nn.Module):
         self.time_num_heads = cfg['Time']['num_heads']
         self.time_hidden_dim = cfg['Time']['hidden_dim']
 
+        self.vegetation_category_encoder = EnvironmentCategoryEncoder(
+            VEGETATION_OUTPUT_CHANNELS,
+            range(VEGETATION_OUTPUT_CHANNELS - 1),
+            category_cardinality,
+        )
+        self.fuel_category_encoder = EnvironmentCategoryEncoder(
+            FUEL_OUTPUT_CHANNELS,
+            range(4, FUEL_OUTPUT_CHANNELS),
+            category_cardinality,
+        )
 
         self.sequence_encoder = Encoder(input_channel = self.input_length, hidden_dim = self.hidden_dim, downscaling_factors = self.downscaling_factors, layers = self.layers, heads = self.heads, head_dim = self.head_dim, window_size = self.window_size, relative_pos_embedding = self.relative_pos_embedding)
 
@@ -51,9 +140,9 @@ class FireTr(nn.Module):
     def forward(self, input_sequence, fuel, vegetation, topography, satellite_images, weather_data, timestamps):
         '''
         input_sequence: (B, 3, 256, 256) 输入火场序列各时刻的图像
-        fuel: (B, 10, 256, 256) 燃料特征
-        vegetation: (B, 6, 256, 256) 植被特征
-        topography: (B, 3, 256, 256) 地形特征
+        fuel: (B, 10, 256, 256) 燃料特征（类别通道为整数 ID）
+        vegetation: (B, 6, 256, 256) 五个类别 ID + 植被偏离百分比
+        topography: (B, 4, 256, 256) 地形特征（坡向为 sin/cos 两通道）
         satellite_images: (B, 3, 3, 256, 256) 卫星图像
         weather_data: (B, 3, 10) 年/月/日/时刻 + 6 维气象特征
         timestamps: (B, 3) 时间戳
@@ -68,8 +157,17 @@ class FireTr(nn.Module):
         input_sequence_encoder, input_sequence_encoder_list = self.sequence_encoder(input_sequence)
         fire_query = repeat(input_sequence_encoder, 'b c h w -> b t c h w', t=T)
 
+        if topography.shape[1] != TOPOGRAPHY_OUTPUT_CHANNELS:
+            raise ValueError(
+                f"topography must have {TOPOGRAPHY_OUTPUT_CHANNELS} channels, "
+                f"got {topography.shape[1]}"
+            )
+        vegetation = self.vegetation_category_encoder(vegetation, 'vegetation')
+        fuel = self.fuel_category_encoder(fuel, 'fuel')
+
         # 2. 论文 Eq. (1) 的空间 K/V 使用 [P, G, F, I]。数据加载器输出
-        #    fuel=10, vegetation=6, topography=3, satellite=T*3=9，共 28 通道。
+        #    fuel=10, vegetation=6, topography=4（坡向 sin/cos）,
+        #    satellite=T*3=9，共 29 通道。
         spatial_satellite_images = satellite_images.reshape(B, T * 3, H, W)
         spatial_information = torch.cat(
             [fuel, vegetation, topography, spatial_satellite_images], dim=1

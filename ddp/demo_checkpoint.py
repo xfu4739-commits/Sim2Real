@@ -22,19 +22,20 @@ def demo_checkpoint(rank, world_size):
 
     CHECKPOINT_PATH = tempfile.gettempdir() + "/model.checkpoint"
     if rank == 0:
-        # All processes should see same parameters as they all start from same
-        # random parameters and gradients are synchronized in backward passes.
-        # Therefore, saving it in one process is sufficient.
+        # DDP 下各进程的模型参数始终一致（梯度会通过 all_reduce 同步），
+        # 所以 只存一份就够了，避免多进程同时写同一文件。
         torch.save(ddp_model.state_dict(), CHECKPOINT_PATH)
 
-    # Use a barrier() to make sure that process 1 loads the model after process
-    # 0 saves it.
+    # barrier 是全员同步点：所有进程都到达这里才一起继续。
+    # 确保 rank0 写完毕
     dist.barrier()
-    # We want to be able to train our model on an `accelerator <https://pytorch.org/docs/stable/torch.html#accelerators>`__
-    # such as CUDA, MPS, MTIA, or XPU.
+
+    # map_location 告诉 PyTorch：把原来在 cuda:0 上的张量，加载到当前 rank 对应的设备上。
     acc = torch.accelerator.current_accelerator()
+    # 这里 acc 是 accelerator 的缩写，指当前所用的加速设备类型，例如 'cuda'、'cpu' 等。
     # configure map_location properly
     map_location = {f"{acc}:0": f"{acc}:{rank}"}
+    
     ddp_model.load_state_dict(
         torch.load(CHECKPOINT_PATH, map_location=map_location, weights_only=True)
     )

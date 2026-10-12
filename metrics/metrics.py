@@ -3,6 +3,59 @@
 refer to https://github.com/jfzhang95/pytorch-deeplab-xception/blob/master/utils/metrics.py
 """
 import numpy as np
+import torch
+import torch.distributed as dist
+
+
+class BinaryAUPRCHistogram:
+    """Memory-bounded, distributed binary average precision.
+
+    Scores are accumulated into fixed probability bins. The two histograms can
+    be summed across DDP ranks, unlike averaging per-batch AP values, which is
+    mathematically incorrect. With 65,536 bins the approximation error is
+    negligible for float32 segmentation probabilities while memory stays fixed.
+    """
+
+    def __init__(self, device, bins=65536):
+        if bins < 2:
+            raise ValueError("bins must be at least 2")
+        self.bins = int(bins)
+        self.device = torch.device(device)
+        self.positive = torch.zeros(self.bins, dtype=torch.float64, device=self.device)
+        self.negative = torch.zeros(self.bins, dtype=torch.float64, device=self.device)
+
+    def update(self, scores, targets):
+        scores = scores.detach().to(self.device).reshape(-1).clamp(0, 1)
+        targets = targets.detach().to(self.device).reshape(-1).bool()
+        indices = torch.clamp(
+            (scores * (self.bins - 1)).long(),
+            min=0,
+            max=self.bins - 1,
+        )
+        self.positive += torch.bincount(
+            indices[targets], minlength=self.bins
+        ).to(torch.float64)
+        self.negative += torch.bincount(
+            indices[~targets], minlength=self.bins
+        ).to(torch.float64)
+
+    def compute(self, sync_dist=False):
+        positive = self.positive.clone()
+        negative = self.negative.clone()
+        if sync_dist and dist.is_available() and dist.is_initialized():
+            dist.all_reduce(positive, op=dist.ReduceOp.SUM)
+            dist.all_reduce(negative, op=dist.ReduceOp.SUM)
+
+        true_positive = torch.flip(positive, dims=(0,)).cumsum(0)
+        false_positive = torch.flip(negative, dims=(0,)).cumsum(0)
+        total_positive = true_positive[-1]
+        if total_positive <= 0:
+            return torch.tensor(0.0, dtype=torch.float64, device=self.device)
+
+        precision = true_positive / (true_positive + false_positive).clamp_min(1)
+        recall = true_positive / total_positive
+        previous_recall = torch.cat([torch.zeros_like(recall[:1]), recall[:-1]])
+        return ((recall - previous_recall) * precision).sum()
 
 
 class SegmentationMetric(object):
