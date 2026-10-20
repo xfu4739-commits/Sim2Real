@@ -219,6 +219,27 @@ To recreate plots from any existing epoch log:
 python tools/plot_training_history.py output/logs/<experiment>/<run_id>/metrics.csv
 ```
 
+For epoch-by-epoch diagnostic curves, preserve all epoch checkpoints with
+`checkpoint.save_interval: 1` and `checkpoint.keep_last_n: 0` (zero disables
+pruning). This is optional and is not enabled in the training configurations.
+Existing running jobs do not reload edited YAML. Use the original run's configuration
+snapshot and the directory containing its `epoch_N.pth` files:
+
+```sh
+python tools/plot_fire_diagnostics.py --config /path/to/config_snapshot.yaml --checkpoint-dir /path/to/models/run_id --output-dir /path/to/diagnostics/run_id --batch-size 4
+```
+
+The script evaluates saved epochs in numeric order on the same materialized
+validation samples. It writes per-checkpoint detailed CSVs and plots, plus
+`checkpoint_summary.csv`, `epoch_horizon_metrics.csv`, `checkpoint_trend.png`
+and `epoch_horizon_trends.png`. The latter compares foreground IoU, precision,
+recall, area ratio, FP/FN and forward-time growth metrics at each target horizon
+across epochs. Training/validation prevalence is written once because the
+dataset split does not change with the checkpoint. Missing checkpoints cannot
+be reconstructed from epoch metrics; the script reports gaps and does not
+interpolate them. Keeping full optimizer checkpoints uses more disk space.
+Run the offline analysis after training to avoid competing for GPU memory.
+
 For detailed fire-mask diagnostics, run a separate checkpoint evaluation. The
 epoch CSV alone cannot recover per-frame or per-event predictions:
 
