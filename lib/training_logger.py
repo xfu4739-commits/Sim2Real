@@ -7,6 +7,8 @@ from datetime import datetime
 import torch
 import yaml
 
+from lib.plotting import plot_fire_horizon_history, plot_training_history
+
 
 CSV_COLUMNS = [
     'epoch',
@@ -41,87 +43,14 @@ BATCH_CSV_COLUMNS = [
     'timestamp',
 ]
 
+FIRE_HORIZON_COLUMNS = [
+    'epoch', 'step', 'samples', 'iou', 'precision', 'recall', 'area_ratio',
+    'mean_fp_pixels', 'mean_fn_pixels', 'growth_iou', 'growth_recall',
+]
+
 
 def create_run_id():
     return datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-
-
-def _read_numeric_csv(path):
-    rows = []
-    with open(path, newline='', encoding='utf-8-sig') as stream:
-        for row in csv.DictReader(stream):
-            if not row.get('epoch'):
-                continue
-            parsed = {}
-            for key, value in row.items():
-                try:
-                    parsed[key] = float(value)
-                except (TypeError, ValueError):
-                    parsed[key] = value
-            rows.append(parsed)
-    return rows
-
-
-def plot_training_history(metrics_csv, output_dir=None):
-    """Render epoch loss and quality curves from an existing metrics.csv."""
-    if not os.path.isfile(metrics_csv):
-        raise FileNotFoundError(f'metrics CSV not found: {metrics_csv}')
-    rows = _read_numeric_csv(metrics_csv)
-    if not rows:
-        raise ValueError(f'metrics CSV contains no epoch rows: {metrics_csv}')
-
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-
-    output_dir = output_dir or os.path.dirname(os.path.abspath(metrics_csv))
-    os.makedirs(output_dir, exist_ok=True)
-    epochs = [row['epoch'] for row in rows]
-
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-    axes[0].plot(epochs, [row['train_loss'] for row in rows], marker='o', label='Train total')
-    axes[0].plot(epochs, [row['val_loss'] for row in rows], marker='o', label='Val total')
-    axes[0].set_title('Total loss')
-    axes[0].set_xlabel('Epoch')
-    axes[0].set_ylabel('Loss')
-    axes[0].grid(True, alpha=0.3)
-    axes[0].legend()
-    for key, label, style in (
-        ('train_dice_loss', 'Train Dice', '-'),
-        ('val_dice_loss', 'Val Dice', '--'),
-        ('train_focal_loss', 'Train Focal', '-'),
-        ('val_focal_loss', 'Val Focal', '--'),
-    ):
-        axes[1].plot(epochs, [row[key] for row in rows], style, marker='o', label=label)
-    axes[1].set_title('Loss components')
-    axes[1].set_xlabel('Epoch')
-    axes[1].set_ylabel('Loss')
-    axes[1].grid(True, alpha=0.3)
-    axes[1].legend()
-    fig.tight_layout()
-    loss_path = os.path.join(output_dir, 'loss_curves.png')
-    fig.savefig(loss_path, dpi=160)
-    plt.close(fig)
-
-    fig, axis = plt.subplots(figsize=(8, 5))
-    for key, label in (
-        ('iou_fg', 'Foreground IoU'),
-        ('miou', 'mIoU'),
-        ('f1', 'F1'),
-        ('auprc', 'AUPRC'),
-    ):
-        axis.plot(epochs, [row[key] for row in rows], marker='o', label=label)
-    axis.set_title('Validation metrics')
-    axis.set_xlabel('Epoch')
-    axis.set_ylabel('Score')
-    axis.set_ylim(0, 1)
-    axis.grid(True, alpha=0.3)
-    axis.legend()
-    fig.tight_layout()
-    metrics_path = os.path.join(output_dir, 'metrics_curves.png')
-    fig.savefig(metrics_path, dpi=160)
-    plt.close(fig)
-    return loss_path, metrics_path
 
 
 class TrainingLogger:
@@ -140,6 +69,7 @@ class TrainingLogger:
         self.csv_path = os.path.join(self.log_dir, 'metrics.csv')
         self.batch_csv_path = os.path.join(self.log_dir, 'batch_metrics.csv')
         self.log_path = os.path.join(self.log_dir, 'training.log')
+        self.fire_horizon_csv_path = os.path.join(self.log_dir, 'fire_horizon_metrics.csv')
         self.start_time = datetime.now()
         self.writer = None
 
@@ -148,6 +78,8 @@ class TrainingLogger:
 
         with open(self.csv_path, 'w', newline='', encoding='utf-8') as f:
             csv.writer(f).writerow(CSV_COLUMNS)
+        with open(self.fire_horizon_csv_path, 'w', newline='', encoding='utf-8') as f:
+            csv.writer(f).writerow(FIRE_HORIZON_COLUMNS)
         if self.save_batch_metrics:
             with open(self.batch_csv_path, 'w', newline='', encoding='utf-8') as f:
                 csv.writer(f).writerow(BATCH_CSV_COLUMNS)
@@ -206,6 +138,23 @@ class TrainingLogger:
             f'mem={metrics["max_mem_mb"]:.0f}MB | '
             f'best_iou={metrics["best_iou"]:.4f} best_map={metrics["best_map"]:.4f}'
         )
+
+    def log_horizons(self, rows, reverse=False):
+        with open(self.fire_horizon_csv_path, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            for row in rows:
+                writer.writerow([row.get(key, '') for key in FIRE_HORIZON_COLUMNS])
+        if self.plot_curves and rows:
+            plot_fire_horizon_history(self.fire_horizon_csv_path, self.log_dir, reverse)
+        for row in rows:
+            self.log(
+                f'  target step {row["step"]}: IoU={row["iou"]:.4f} '
+                f'P={row["precision"]:.4f} R={row["recall"]:.4f} '
+                f'area_ratio={row["area_ratio"]:.3f} '
+                f'growth_IoU={row["growth_iou"]:.4f} '
+                f'growth_R={row["growth_recall"]:.4f} '
+                f'FP={row["mean_fp_pixels"]:.0f} FN={row["mean_fn_pixels"]:.0f}'
+            )
 
     def should_log_batch(self, batch, total_batches):
         return batch == 1 or batch == total_batches or batch % self.batch_log_interval == 0

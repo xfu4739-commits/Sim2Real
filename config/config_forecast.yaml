@@ -1,0 +1,106 @@
+dataset:
+  sim_root_dir:
+    - /root/autodl-tmp/Sim2Real-Fire-data/sim_full/0002_00714
+    - /root/autodl-tmp/Sim2Real-Fire-data/sim_full/0004_01191
+    - /root/autodl-tmp/Sim2Real-Fire-data/sim_full/0156_00112
+    - /root/autodl-tmp/Sim2Real-Fire-data/sim_full/0172_00204
+
+  real_root_dir: /root/autodl-tmp/Sim2Real-Fire-data/real_full
+  vis_dir: /root/autodl-tmp/Sim2Real-Fire-output/vis/sim_day_forecast_desktop
+
+  train_dir: Satellite_Images_Mask
+  val_dir: Satellite_Images_Mask
+  trainwxs_dir: Weather_Data
+  valwxs_dir: Weather_Data
+  topo_dir: Topography_Map
+  vege_dir: Vegetation_Map
+  fuel_dir: Fuel_Map
+  sim_satellite_file: satellite_image.png
+
+  satellite_fusion:
+    enabled: true
+    style: figure2
+    match_radiometry: false
+    hotspots: false
+    alpha: 0.85
+    fire_color: [255, 80, 0]
+
+  real_satellite_dir: Satellite_Images
+  test_dir: Satellite_Images_Mask
+  testwxs_dir: Weather_Data
+
+  input_length: 3
+  img_size: [256, 256]
+
+  # false：使用早期火场状态预测后期火场状态
+  reverse: false
+
+  num_classes: 2
+  num_workers: 8
+  environment_cache_size: 4
+
+  sim_split:
+    enabled: true
+    val_ratio: 0.2
+    seed: 12345
+
+FireTr:
+  input_length: 3
+  img_size: [256, 256]
+
+  Encoder:
+    hidden_dim: 96
+    downscaling_factors: [4, 2, 2]
+    layers: [2, 2, 2]
+    heads: [3, 6, 12]
+    head_dim: 32
+    window_size: 8
+    relative_pos_embedding: true
+
+    # topography=4、vegetation=6、fuel=10、RGB satellite frames=9
+    modal_channel: 23
+    environment_category_cardinality: 65537
+
+  Spatial:
+    embed_dim: 384
+    num_heads: 4
+    hidden_dim: 512
+
+  Temporal:
+    embed_dim: 384
+    num_heads: 4
+    hidden_dim: 512
+
+  Time:
+    embed_dim: 384
+    num_heads: 4
+    hidden_dim: 512
+
+training:
+  batch_size: 4
+  learning_rate: 0.0001
+  epochs: 10
+
+checkpoint:
+  # 训练新模型时不要加载旧权重
+  checkpoint: false
+  checkpoint_path: /root/autodl-tmp/Sim2Real-Fire-output/models/sim_day_forecast_desktop/best_iou.pth
+
+  # 程序会在这里自动创建 run_id 子目录
+  model_save_path: /root/autodl-tmp/Sim2Real-Fire-output/models/sim_day_forecast_desktop
+
+  # 从头训练
+  resume: false
+  resume_path: /root/autodl-tmp/Sim2Real-Fire-output/models/sim_day_forecast_desktop/last.pth
+
+  save_interval: 5
+  keep_last_n: 3
+
+logging:
+  # 程序会在这里自动创建 run_id 子目录
+  log_dir: /root/autodl-tmp/Sim2Real-Fire-output/logs/sim_day_forecast_desktop
+
+  plot_curves: true
+  tensorboard: true
+  save_batch_metrics: true
+  batch_log_interval: 10

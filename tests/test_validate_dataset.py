@@ -76,7 +76,7 @@ class DatasetValidatorTest(unittest.TestCase):
 
         rules = load_rules(config_path, results)
 
-        self.assertEqual(rules.modal_channel, 29)
+        self.assertEqual(rules.modal_channel, 23)
         self.assertEqual(results.error_count, 0)
 
 

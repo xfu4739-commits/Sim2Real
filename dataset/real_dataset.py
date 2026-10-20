@@ -1,7 +1,6 @@
 import os
 import cv2
 import torch
-import random
 import numpy as np
 from torch.utils.data import Dataset
 from datetime import datetime
@@ -11,10 +10,7 @@ from dataset.common import (
     filter_complete_environment_scenes,
     resolve_scene_roots,
 )
-
-torch.manual_seed(0)
-np.random.seed(0)
-random.seed(0)
+from dataset.time_normalization import normalize_target_timestamps
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
 
@@ -194,19 +190,5 @@ class RealFireDataset(Dataset):
         return file_lines_dict
 
     def normalize_timestamps(self, timestamps):
-        # Normalize against chronological bounds rather than sequence order. This
-        # preserves direction: forecast timestamps increase, while backtracking
-        # timestamps decrease. Using the first/last sequence items as the bounds
-        # made both directions increase from 0 to 1 and erased that distinction.
-        start_time = min(timestamps)
-        end_time = max(timestamps)
-        duration = (end_time - start_time).total_seconds()
-        if duration == 0:
-            normalized_timestamps = [0.0 for _ in timestamps]
-        else:
-            normalized_timestamps = [
-                (timestamp - start_time).total_seconds() / duration
-                for timestamp in timestamps
-            ]
-        return normalized_timestamps[3:]
+        return normalize_target_timestamps(timestamps)
 

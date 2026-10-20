@@ -29,7 +29,7 @@ class MultiheadAttention(nn.Module):
         self.out_proj = nn.Linear(embed_dim, embed_dim)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, q, k, v, attn_mask=None):
+    def forward(self, q, k, v, attn_mask=None, scale=None):
         bsz, tgt_len, embed_dim = q.size()
         src_len = k.size(1)
 
@@ -37,7 +37,9 @@ class MultiheadAttention(nn.Module):
         k = self.k_proj(k).view(bsz, src_len, self.num_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(v).view(bsz, src_len, self.num_heads, self.head_dim).transpose(1, 2)
 
-        attn_weights = torch.matmul(q, k.transpose(-2, -1)) / self.scale
+        attn_weights = torch.matmul(q, k.transpose(-2, -1)) / (
+            self.scale if scale is None else scale
+        )
 
         if attn_mask is not None:
             attn_weights = attn_weights.masked_fill(attn_mask == 0, float('-inf'))
@@ -89,10 +91,6 @@ class TemporalCrossAttention(nn.Module):
         self.norm2 = nn.LayerNorm(embed_dim)
         self.ff = FeedForward(embed_dim, ff_hidden_dim)
 
-    def _flatten_tokens(self, x):
-        b, t, c, h, w = x.shape
-        return x.reshape(b * t, c, h * w).transpose(1, 2).reshape(b, t * h * w, c)
-
     def forward(self, fire_features, satellite_features, weather_data):
         """
         fire_features:      (B, T, C, H, W)  Query = SwinEnc(S)
@@ -113,23 +111,26 @@ class TemporalCrossAttention(nn.Module):
         weather_features = self.wx_encoder(weather_data[..., -6:], mask)  # (B, T, C)
 
         q = self.q_proj(fire_features.reshape(b * t, c, h, w))
-        q = q.reshape(b * t, c, h * w).transpose(1, 2).reshape(b, t * h * w, c)
+        q = q.reshape(b, t, c, h, w).permute(0, 3, 4, 1, 2)
+        q = q.reshape(b * h * w, t, c)
 
         weather_map = weather_features.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, h, w)
         kv_features = torch.cat([satellite_features, weather_map], dim=2)  # (B, T, 2C, H, W)
-        kv_tokens = self._flatten_tokens(kv_features)  # (B, T*H*W, 2C)
+        # Attend across T at each spatial position, as in the temporal term
+        # of Eq. (1), rather than over all T*H*W tokens at once.
+        kv_tokens = kv_features.permute(0, 3, 4, 1, 2).reshape(b * h * w, t, 2 * c)
         k = self.k_proj(kv_tokens)
         v = self.v_proj(kv_tokens)
 
-        attn_output = self.mha(q, k, v)
-        attn_output = attn_output.view(b, t, h, w, c).permute(0, 1, 4, 2, 3)
+        attn_output = self.mha(q, k, v, scale=math.sqrt(t))
+        attn_output = attn_output.reshape(b, h, w, t, c).permute(0, 3, 4, 1, 2)
         attn_output = attn_output + fire_features
 
-        attn_output = self.norm1(attn_output.view(b * t, c, h * w).transpose(1, 2)).transpose(1, 2).view(b, t, c, h, w)
+        attn_output = self.norm1(attn_output.reshape(b * t, c, h * w).transpose(1, 2)).transpose(1, 2).reshape(b, t, c, h, w)
 
-        ff_output = self.ff(attn_output.view(b * t, c, h * w).transpose(1, 2)).transpose(1, 2).view(b, t, c, h, w)
+        ff_output = self.ff(attn_output.reshape(b * t, c, h * w).transpose(1, 2)).transpose(1, 2).reshape(b, t, c, h, w)
 
-        output = self.norm2(ff_output.view(b * t, c, h * w).transpose(1, 2)).transpose(1, 2).view(b, t, c, h, w)
+        output = self.norm2(ff_output.reshape(b * t, c, h * w).transpose(1, 2)).transpose(1, 2).reshape(b, t, c, h, w)
         output = output + attn_output
 
         return output

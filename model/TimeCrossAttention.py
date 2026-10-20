@@ -22,11 +22,11 @@ class multiTimeAttention(nn.Module):
         self.k_conv = nn.Conv2d(embed_dim, embed_dim, kernel_size=1)
         self.v_conv = nn.Conv2d(embed_dim, embed_dim, kernel_size=1)
         
-        self.scale = self.head_dim ** -0.5
-
     def forward(self, q, k, v, mask=None):
         bsz, nq, embed_dim = q.size()
         _, nk, nv, embed_dim = k.size()
+        if v.shape != k.shape:
+            raise ValueError(f'key/value shapes differ: {k.shape} vs {v.shape}')
         
         # Project q, k, v
         q = self.q_proj(q)
@@ -39,21 +39,24 @@ class multiTimeAttention(nn.Module):
         k = self.k_proj(k)
         v = self.v_proj(v)
         
-        # Reshape q, k, v
+        # Keep heads, pixels, source times and target times on separate axes.
         q = rearrange(q, 'b nq (h d) -> b h nq d', h=self.num_heads)
-        k = rearrange(k, 'b nk nv (h d) -> b h nk nv d', h=self.num_heads)
-        v = rearrange(v, 'b nk nv (h d) -> b h nk nv d', h=self.num_heads)
+        k = rearrange(k, 'b nk nv (h d) -> b h nv nk d', h=self.num_heads)
+        v = rearrange(v, 'b nk nv (h d) -> b h nv nk d', h=self.num_heads)
         
-        # Attention weights
-        attn_weights = torch.einsum('bhqd, bhkvd -> bhqk', q, k) / math.sqrt(k.size(-2) * k.size(-3))
+        # For each pixel and target time, attend over source times. Eq. (2)
+        # scales by the number of spatial positions (H*W), not H*W*T.
+        attn_weights = torch.einsum('bhqd,bhpkd->bhpqk', q, k) / math.sqrt(nv)
         if mask is not None:
             attn_weights = attn_weights.masked_fill(mask == 0, float('-inf'))
         
         attn_weights = F.softmax(attn_weights, dim=-1)
         
         # Attention output
-        attn_output = torch.einsum('bhqk, bhkvd -> bhqvd', attn_weights, v)
-        attn_output = attn_output.contiguous().view(bsz, nq, nv, self.nhidden)
+        attn_output = torch.einsum('bhpqk,bhpkd->bhpqd', attn_weights, v)
+        # A direct view here mixed head and target-time axes in the old code.
+        attn_output = attn_output.permute(0, 3, 2, 1, 4).contiguous()
+        attn_output = attn_output.view(bsz, nq, nv, self.nhidden)
         attn_output = self.out_proj(attn_output)
         
         return attn_output
@@ -102,12 +105,16 @@ class TimeCrossAttention(nn.Module):
     
     def forward(self, x, query_time):
         b, t, c, h, w = x.shape
-        x = rearrange(x, 'b t c h w -> b t (h w) c')
+        if query_time.shape != (b, t):
+            raise ValueError(f'query_time must have shape {(b, t)}, got {tuple(query_time.shape)}')
+        source = rearrange(x, 'b t c h w -> b t (h w) c')
         
         query = self.time_embedding(query_time)
 
-        attn_output = self.att(query, x, x)
-        x = x + attn_output  
+        attn_output = self.att(query, source, source)
+        # Cross-attention produces target-time tokens. Its residual must come
+        # from the target query, not source[i] paired with target[i].
+        x = query.unsqueeze(2) + attn_output
         x = self.norm1(x)
         
         ff_output = self.ff(x)

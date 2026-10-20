@@ -4,7 +4,11 @@ import time
 import argparse
 import math
 import tempfile
+import uuid
+from contextlib import nullcontext
 from datetime import datetime
+from itertools import islice
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -20,6 +24,8 @@ from model.S2RFireTr import FireTr
 from dataset.sim_dataset import SimFireDataset
 from lib.dice_loss import BinaryDiceLoss
 from lib.focal_loss import BinaryFocalLoss
+from lib.losses import combined_losses
+from lib.fire_diagnostics import batch_fire_counts, summarize_fire_counts
 from lib.training_logger import (
     TrainingLogger,
     build_checkpoint,
@@ -57,6 +63,8 @@ class DistributedEvalSampler(Sampler):
 
 
 def _runtime_device(local_rank=0):
+    if local_rank < 0:
+        raise ValueError(f'local rank must be non-negative, got {local_rank}')
     if torch.cuda.is_available():
         if local_rank >= torch.cuda.device_count():
             raise RuntimeError(
@@ -68,13 +76,31 @@ def _runtime_device(local_rank=0):
     return torch.device('cpu')
 
 
+def validate_training_runtime(cfg, device):
+    """Fail before creating run directories if this experiment cannot train."""
+    training = cfg['training']
+    if training.get('require_cuda', False) and device.type != 'cuda':
+        raise RuntimeError('This experiment requires CUDA, but no CUDA GPU is available')
+    for key in ('batch_size', 'gradient_accumulation_steps'):
+        value = training.get(key, 1)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError(f'training.{key} must be a positive integer, got {value!r}')
+
+    roots = cfg['dataset']['sim_root_dir']
+    configured = [roots] if isinstance(roots, str) else list(roots)
+    missing = [root for root in configured if not Path(root).expanduser().is_dir()]
+    if missing:
+        raise FileNotFoundError(
+            'Configured simulation data paths do not exist: '
+            + ', '.join(map(str, missing))
+        )
+
+
 def init_distributed(rank=None, world_size=None):
     if 'LOCAL_RANK' in os.environ:
         local_rank = int(os.environ['LOCAL_RANK'])
         device = _runtime_device(local_rank)
-        if not dist.is_initialized():
-            backend = 'nccl' if device.type == 'cuda' and os.name != 'nt' else 'gloo'
-            dist.init_process_group(backend=backend)
+        setup(int(os.environ['RANK']), int(os.environ['WORLD_SIZE']))
         rank = dist.get_rank()
         world_size = dist.get_world_size()
     else:
@@ -100,7 +126,10 @@ def reduce_values(values, device):
 def load_data(cfg, rank, world_size, device):
     train_dataset = SimFireDataset(cfg['dataset'])
     val_dataset = SimFireDataset(cfg['dataset'], training=False)
-    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+    # Drop the incomplete global batch instead of padding it with repeated scenes.
+    train_sampler = DistributedSampler(
+        train_dataset, num_replicas=world_size, rank=rank, shuffle=True, drop_last=True
+    )
     val_sampler = DistributedEvalSampler(
         val_dataset, num_replicas=world_size, rank=rank
     )
@@ -120,6 +149,11 @@ def load_data(cfg, rank, world_size, device):
         pin_memory=device.type == 'cuda',
         drop_last=False,
     )
+    if len(train_dataloader) == 0:
+        raise ValueError(
+            'No complete training batch: reduce training.batch_size or the number '
+            'of processes, or add more training samples.'
+        )
     if is_main_process(rank):
         print(f'len of train_dataloader (per process): {len(train_dataloader)}')
         print(f'len of val_dataloader (per process): {len(val_dataloader)}')
@@ -148,17 +182,18 @@ def initialize_optimizer_scheduler(model, cfg):
 
 
 def compute_losses(pred, target, dice, focal):
-    dice_loss = dice(pred, target, use_sigmoid=True)
-    focal_loss = focal(pred, target)
-    total_loss = dice_loss + focal_loss
+    total_loss, dice_loss, focal_loss = combined_losses(pred, target, dice, focal)
     return total_loss, dice_loss.item(), focal_loss.item()
 
 
 def train_loop(dataloader, model, optimizer, device, loss_dice, loss_focal,
-               epoch, total_epochs, rank, batch_size, logger=None):
+               epoch, total_epochs, rank, batch_size, logger=None,
+               accumulation_steps=1):
     model.train()
     train_loss, train_dice_loss, train_focal_loss = [], [], []
     total_batches = len(dataloader)
+    if accumulation_steps < 1:
+        raise ValueError('accumulation_steps must be at least 1')
     epoch_start = time.time()
     if device.type == 'cuda':
         torch.cuda.reset_peak_memory_stats(device)
@@ -179,14 +214,30 @@ def train_loop(dataloader, model, optimizer, device, loss_dice, loss_focal,
             input_squence.to(device), output_squence.to(device), fuel.to(device), vegetation.to(device),
             topography.to(device), satellite_images.to(device), weather_data.to(device), timestamps.to(device),
         )
-        optimizer.zero_grad()
-        pred = model(input_squence, fuel, vegetation, topography, satellite_images, weather_data, timestamps)
-        loss, dice_val, focal_val = compute_losses(pred, output_squence, loss_dice, loss_focal)
+        window_start = ((batch_idx - 1) // accumulation_steps) * accumulation_steps
+        window_size = min(accumulation_steps, total_batches - window_start)
+        update_due = batch_idx == window_start + window_size
+        if batch_idx == window_start + 1:
+            optimizer.zero_grad(set_to_none=True)
+        # DDP must see the forward pass inside no_sync as well as backward.
+        sync_context = (model.no_sync() if isinstance(model, DDP) and not update_due
+                        else nullcontext())
+        with sync_context:
+            pred = model(input_squence, fuel, vegetation, topography, satellite_images, weather_data, timestamps)
+            if pred.shape != output_squence.shape:
+                raise ValueError(
+                    f'model output shape {tuple(pred.shape)} does not match '
+                    f'target shape {tuple(output_squence.shape)}'
+                )
+            loss, dice_val, focal_val = compute_losses(pred, output_squence, loss_dice, loss_focal)
+            if not torch.isfinite(loss).item():
+                raise RuntimeError(f'non-finite training loss at epoch {epoch}, batch {batch_idx}')
+            (loss / window_size).backward()
         train_loss.append(loss.item())
         train_dice_loss.append(dice_val)
         train_focal_loss.append(focal_val)
-        loss.backward()
-        optimizer.step()
+        if update_due:
+            optimizer.step()
 
         if is_main_process(rank):
             batch_time = max(time.time() - batch_start, 1e-6)
@@ -245,6 +296,8 @@ def val_loop(dataloader, model, device, loss_dice, loss_focal, epoch, total_epoc
     sample_count_local = 0
     metric = SegmentationMetric(2)
     auprc = BinaryAUPRCHistogram(device)
+    fire_counts = torch.zeros((eval_model.input_length, 7), dtype=torch.float64, device=device)
+    reverse = dataloader.dataset.reverse
     val_start = time.time()
 
     with torch.no_grad():
@@ -276,6 +329,8 @@ def val_loop(dataloader, model, device, loss_dice, loss_focal, epoch, total_epoc
             auprc.update(pred, output_squence)
 
             pred = torch.where(pred > 0.5, torch.ones_like(pred), torch.zeros_like(pred))
+            batch_counts = batch_fire_counts(pred, output_squence, input_squence, reverse)
+            fire_counts += batch_counts
             pred, output_squence = pred.cpu().numpy(), output_squence.cpu().numpy()
             pred, output_squence = pred.astype(np.int32), output_squence.astype(np.int32)
             metric.addBatch(pred, output_squence)
@@ -295,6 +350,7 @@ def val_loop(dataloader, model, device, loss_dice, loss_focal, epoch, total_epoc
     confusion = torch.tensor(metric.confusionMatrix, dtype=torch.float64, device=device)
     if dist.is_initialized():
         dist.all_reduce(confusion, op=dist.ReduceOp.SUM)
+        dist.all_reduce(fire_counts, op=dist.ReduceOp.SUM)
     metric.confusionMatrix = confusion.cpu().numpy()
 
     mAp = float(auprc.compute(sync_dist=True).item())
@@ -308,6 +364,7 @@ def val_loop(dataloader, model, device, loss_dice, loss_focal, epoch, total_epoc
         'val_focal_loss': focal_sum / sample_count if sample_count > 0 else 0.0,
         'auprc': mAp,
         'val_time_sec': time.time() - val_start,
+        'horizons': summarize_fire_counts(fire_counts, epoch),
         **seg_stats,
     }
 
@@ -345,7 +402,20 @@ def save_epoch_checkpoints(model, optimizer, scheduler, epoch, best_metrics, cfg
 def main_worker(rank, world_size, config_path):
     setup_seed(12345 + rank)
     rank, world_size, device = init_distributed(rank, world_size)
+    try:
+        _run_training(rank, world_size, device, config_path)
+    finally:
+        cleanup()
+
+
+def _run_training(rank, world_size, device, config_path):
     cfg = load_config(config_path)
+    validate_training_runtime(cfg, device)
+
+    # Check the actual data before creating an output run directory.
+    train_dataloader, val_dataloader, train_sampler, val_sampler, train_size, val_size = load_data(
+        cfg, rank, world_size, device
+    )
 
     ckpt_cfg = cfg['checkpoint']
     log_cfg = cfg.get('logging', {})
@@ -381,10 +451,6 @@ def main_worker(rank, world_size, config_path):
         logger.log(f'{mode} training, world_size={world_size}, rank={rank}, device={device}')
         logger.log(f'Run outputs: logs={logger.log_dir}, models={model_save_path}')
 
-    train_dataloader, val_dataloader, train_sampler, val_sampler, train_size, val_size = load_data(
-        cfg, rank, world_size, device
-    )
-
     model = initialize_model(cfg, device, rank)
     optimizer, scheduler = initialize_optimizer_scheduler(model, cfg)
 
@@ -408,6 +474,7 @@ def main_worker(rank, world_size, config_path):
     total_epochs = cfg['training']['epochs']
     per_gpu_batch = cfg['training']['batch_size']
     global_batch = per_gpu_batch * world_size
+    accumulation_steps = cfg['training'].get('gradient_accumulation_steps', 1)
 
     if is_main_process(rank):
         total_params, trainable_params = count_parameters(
@@ -419,6 +486,8 @@ def main_worker(rank, world_size, config_path):
             'world_size': world_size,
             'per_gpu_batch_size': per_gpu_batch,
             'global_batch_size': global_batch,
+            'gradient_accumulation_steps': accumulation_steps,
+            'effective_batch_size': global_batch * accumulation_steps,
             'train_samples': train_size,
             'val_samples': val_size,
             'total_epochs': total_epochs,
@@ -442,6 +511,7 @@ def main_worker(rank, world_size, config_path):
         train_metrics = train_loop(
             train_dataloader, model, optimizer, device, loss_dice, loss_focal,
             epoch, total_epochs, rank, per_gpu_batch, logger,
+            accumulation_steps=accumulation_steps,
         )
         val_metrics = val_loop(
             val_dataloader, model, device, loss_dice, loss_focal, epoch, total_epochs, rank
@@ -450,6 +520,7 @@ def main_worker(rank, world_size, config_path):
         current_lr = scheduler.get_last_lr()[0]
 
         if is_main_process(rank):
+            horizons = val_metrics.pop('horizons')
             best_metrics = save_best_weights(
                 model, val_metrics['iou_fg'], val_metrics['auprc'], best_metrics, model_save_path, logger
             )
@@ -467,52 +538,42 @@ def main_worker(rank, world_size, config_path):
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             }
             logger.log_epoch(epoch_log)
+            logger.log_horizons(horizons, reverse=cfg['dataset']['reverse'])
+
+        # Keep every rank on the same epoch while rank 0 writes checkpoints.
+        if dist.is_initialized():
+            dist.barrier()
 
     if is_main_process(rank):
         logger.log_finish(total_epochs)
 
-    if dist.is_initialized():
-        cleanup()
-
-
 def run_smoke_test(config_path):
-    """Run one real forward/backward/update step without writing checkpoints."""
+    """Run one configured optimizer update without writing checkpoints."""
     setup_seed(12345)
     device = _runtime_device(0)
     cfg = load_config(config_path)
-    dataset = SimFireDataset(cfg['dataset'])
-    if len(dataset) == 0:
-        raise RuntimeError('training dataset contains no usable samples')
-
-    (_, input_sequence, output_sequence, fuel, vegetation, topography,
-     satellite_images, weather_data, timestamps) = dataset[0]
-    tensors = (
-        input_sequence, output_sequence, fuel, vegetation, topography,
-        satellite_images, weather_data, timestamps,
-    )
-    (input_sequence, output_sequence, fuel, vegetation, topography,
-     satellite_images, weather_data, timestamps) = (
-        tensor.unsqueeze(0).to(device) for tensor in tensors
-    )
-
+    validate_training_runtime(cfg, device)
+    train_loader, _, _, _, train_size, _ = load_data(cfg, 0, 1, device)
+    accumulation_steps = cfg['training'].get('gradient_accumulation_steps', 1)
+    batches = list(islice(train_loader, accumulation_steps))
     model = FireTr(cfg['FireTr']).to(device)
     optimizer, _ = initialize_optimizer_scheduler(model, cfg)
-    optimizer.zero_grad()
-    prediction = model(
-        input_sequence, fuel, vegetation, topography, satellite_images,
-        weather_data, timestamps,
+    metrics = train_loop(
+        batches, model, optimizer, device, BinaryDiceLoss(), BinaryFocalLoss(),
+        1, 1, 0, cfg['training']['batch_size'],
+        accumulation_steps=accumulation_steps,
     )
-    loss, dice_value, focal_value = compute_losses(
-        prediction, output_sequence, BinaryDiceLoss(), BinaryFocalLoss()
-    )
-    if not torch.isfinite(loss):
-        raise RuntimeError(f'smoke-test loss is not finite: {loss.item()}')
-    loss.backward()
-    optimizer.step()
+    if not math.isfinite(metrics['train_loss']):
+        raise RuntimeError(f"smoke-test loss is not finite: {metrics['train_loss']}")
     print(
         'Smoke test passed: '
-        f'device={device}, samples={len(dataset)}, output={tuple(prediction.shape)}, '
-        f'loss={loss.item():.6f}, dice={dice_value:.6f}, focal={focal_value:.6f}'
+        f'device={device}, samples={train_size}, '
+        f'microbatch={batches[0][1].shape[0]}, accumulated={len(batches)}, '
+        f'output={tuple(batches[0][2].shape)}, '
+        f'loss={metrics["train_loss"]:.6f}, '
+        f'dice={metrics["train_dice_loss"]:.6f}, '
+        f'focal={metrics["train_focal_loss"]:.6f}, '
+        f'peak_allocated_mb={metrics["max_mem_mb"]:.0f}'
     )
 
 
@@ -525,18 +586,26 @@ def main():
         default=None,
         help='number of local training processes; defaults to WORLD_SIZE or 1',
     )
+    parser.add_argument('--local-rank', '--local_rank', type=int, default=None,
+                        help=argparse.SUPPRESS)
     parser.add_argument(
         '--smoke-test',
         action='store_true',
-        help='run one dataset/model forward-backward step, then exit without writing outputs',
+        help='run one configured optimizer update, then exit without writing outputs',
     )
     args = parser.parse_args()
     if args.smoke_test:
+        if 'LOCAL_RANK' in os.environ:
+            raise ValueError('--smoke-test runs on one process; use python train.py --smoke-test')
         run_smoke_test(args.config)
         return
     if 'LOCAL_RANK' in os.environ:
         world_size = int(os.environ.get('WORLD_SIZE', WORLD_SIZE))
-        rank = int(os.environ['LOCAL_RANK'])
+        rank = int(os.environ['RANK'])
+        if world_size > 1 and not torch.cuda.is_available():
+            raise RuntimeError('Multi-GPU training requires CUDA, but no CUDA device is available')
+        if args.world_size is not None and args.world_size != world_size:
+            raise ValueError('--world-size conflicts with torchrun WORLD_SIZE')
         main_worker(rank, world_size, args.config)
     else:
         world_size = args.world_size
@@ -544,6 +613,8 @@ def main():
             world_size = int(os.environ.get('WORLD_SIZE', WORLD_SIZE))
         if world_size < 1:
             raise ValueError('--world-size must be at least 1')
+        if world_size > 1 and not torch.cuda.is_available():
+            raise RuntimeError('Multi-GPU training requires CUDA, but no CUDA device is available')
         if torch.cuda.is_available() and world_size > torch.cuda.device_count():
             raise ValueError(
                 f'world_size={world_size}, but only {torch.cuda.device_count()} CUDA devices are available'
@@ -551,16 +622,19 @@ def main():
         if world_size == 1:
             main_worker(0, 1, args.config)
             return
-        init_file = os.path.join(tempfile.gettempdir(), "sim2real_fire_ddp.init")
+        init_file = os.path.join(tempfile.gettempdir(), f"sim2real_fire_ddp_{uuid.uuid4().hex}.init")
         os.environ["DDP_INIT_FILE"] = init_file
-        if os.path.isfile(init_file):
-            os.remove(init_file)
-        mp.spawn(
-            main_worker,
-            args=(world_size, args.config),
-            nprocs=world_size,
-            join=True,
-        )
+        try:
+            mp.spawn(
+                main_worker,
+                args=(world_size, args.config),
+                nprocs=world_size,
+                join=True,
+            )
+        finally:
+            os.environ.pop("DDP_INIT_FILE", None)
+            if os.path.isfile(init_file):
+                os.remove(init_file)
 
 
 if __name__ == '__main__':

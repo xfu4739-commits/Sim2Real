@@ -11,10 +11,64 @@ from lib.training_logger import (
     plot_training_history,
     save_checkpoint,
 )
-from train import _runtime_device, reduce_values
+from train import _runtime_device, reduce_values, train_loop, validate_training_runtime
+
+
+class _ScalarModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.tensor(0.5))
+
+    def forward(self, input_sequence, *unused):
+        return input_sequence * self.weight
+
+
+class _SquaredLoss:
+    def __call__(self, prediction, target, use_sigmoid=False):
+        return (prediction - target).square().mean()
+
+
+class _ZeroLoss:
+    def __call__(self, prediction, target):
+        return prediction.sum() * 0
 
 
 class TrainingRuntimeTest(unittest.TestCase):
+    def test_gradient_accumulation_matches_full_batch_update(self):
+        inputs = [torch.full((1, 3, 2, 2), value) for value in (1.0, 2.0, 3.0)]
+        targets = [torch.zeros_like(value) for value in inputs]
+        batches = [
+            (torch.tensor([index]), source, target, *([source] * 6))
+            for index, (source, target) in enumerate(zip(inputs, targets))
+        ]
+        accumulated = _ScalarModel()
+        reference = _ScalarModel()
+        optimizer = torch.optim.Adam(accumulated.parameters(), lr=0.01)
+        reference_optimizer = torch.optim.Adam(reference.parameters(), lr=0.01)
+
+        train_loop(
+            batches, accumulated, optimizer, torch.device('cpu'),
+            _SquaredLoss(), _ZeroLoss(), 1, 1, 1, 1,
+            accumulation_steps=2,
+        )
+        reference_optimizer.zero_grad()
+        _SquaredLoss()(
+            reference(torch.cat(inputs[:2])), torch.cat(targets[:2])
+        ).backward()
+        reference_optimizer.step()
+        reference_optimizer.zero_grad()
+        _SquaredLoss()(reference(inputs[2]), targets[2]).backward()
+        reference_optimizer.step()
+        self.assertTrue(torch.allclose(accumulated.weight, reference.weight))
+
+    def test_cuda_requirement_fails_before_training(self):
+        with self.assertRaisesRegex(RuntimeError, 'requires CUDA'):
+            validate_training_runtime(
+                {'training': {'batch_size': 1, 'require_cuda': True},
+                 'dataset': {'sim_root_dir': '.'}},
+                torch.device('cpu'),
+            )
+
     def test_logger_uses_run_directory_and_generates_curves(self):
         metrics = {
             'epoch': 1, 'lr': 0.0001,

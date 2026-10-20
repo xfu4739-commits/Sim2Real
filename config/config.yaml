@@ -1,38 +1,44 @@
 dataset:
-  # Quick-test: point directly at one scene folder (not sim_full parent).
-  # 0156_00112 is the smallest scene in sim_full (112 fire events).
-  sim_root_dir: 'C:/Users/10115/Datasets/Sim2Real-Fire/sim_full/0156_00112'
-  real_root_dir: 'C:/Users/10115/Datasets/Sim2Real-Fire/real_full'
-  vis_dir: 'C:/Users/10115/Datasets/Sim2Real-Fire/vis'
-  # sim_full: fire masks live under Satellite_Images_Mask/<sub_id>/outK.jpg
-  train_dir: 'Satellite_Images_Mask'
-  val_dir: 'Satellite_Images_Mask'
-  trainwxs_dir: 'Weather_Data'
-  valwxs_dir: 'Weather_Data'
-  topo_dir: 'Topography_Map'
-  vege_dir: 'Vegetation_Map'
-  fuel_dir: 'Fuel_Map'
-  sim_satellite_file: 'satellite_image.png'
-  # Fuse satellite_image.png with each input fire mask on load (see dataset/satellite_fusion.py).
+  sim_root_dir:
+    - /root/autodl-tmp/Sim2Real-Fire-data/sim_full/0001_02614
+    - /root/autodl-tmp/Sim2Real-Fire-data/sim_full/0002_00714
+    - /root/autodl-tmp/Sim2Real-Fire-data/sim_full/0003_01715
+    - /root/autodl-tmp/Sim2Real-Fire-data/sim_full/0004_01191
+    - /root/autodl-tmp/Sim2Real-Fire-data/sim_full/0005_00725
+    - /root/autodl-tmp/Sim2Real-Fire-data/sim_full/0128_04254
+    - /root/autodl-tmp/Sim2Real-Fire-data/sim_full/0136_00689
+    - /root/autodl-tmp/Sim2Real-Fire-data/sim_full/0147_00538
+    - /root/autodl-tmp/Sim2Real-Fire-data/sim_full/0153_00235
+    - /root/autodl-tmp/Sim2Real-Fire-data/sim_full/0156_00112
+    - /root/autodl-tmp/Sim2Real-Fire-data/sim_full/0172_00204
+    - /root/autodl-tmp/Sim2Real-Fire-data/sim_full/0173_00696
+  real_root_dir: /root/autodl-tmp/Sim2Real-Fire-data/real_full
+  vis_dir: /root/autodl-tmp/Sim2Real-Fire-output/vis/sim_full
+
+  train_dir: Satellite_Images_Mask
+  val_dir: Satellite_Images_Mask
+  trainwxs_dir: Weather_Data
+  valwxs_dir: Weather_Data
+  topo_dir: Topography_Map
+  vege_dir: Vegetation_Map
+  fuel_dir: Fuel_Map
+  sim_satellite_file: satellite_image.png
   satellite_fusion:
     enabled: true
-    style: burn-scar          # burn-scar（训练用）或 overlay（调试）
-    match_radiometry: true      # 模拟底图亮度归一化，建议保持 true
-    hotspots: true
-    alpha: 0.85                 # overlay only
-    fire_color: [255, 80, 0]   # overlay only, RGB
-  # real_full: RGB under Satellite_Images/<sub_id>/, masks under Satellite_Images_Mask/
-  real_satellite_dir: 'Satellite_Images'
-  test_dir: 'Satellite_Images_Mask'
-  testwxs_dir: 'Weather_Data'
+    style: figure2
+    match_radiometry: false
+    hotspots: false
+    alpha: 0.85
+    fire_color: [255, 80, 0]
+  real_satellite_dir: Satellite_Images
+  test_dir: Satellite_Images_Mask
+  testwxs_dir: Weather_Data
   input_length: 3
   img_size: [256, 256]
-  reverse: True
+  reverse: true
   num_classes: 2
-  num_workers: 4
-  # Per DataLoader worker; prevents preloading hundreds of scene rasters.
-  environment_cache_size: 8
-  # Split simulation fire events (Satellite_Images_Mask/<sub_id>/) into train/val.
+  num_workers: 2
+  environment_cache_size: 12
   sim_split:
     enabled: true
     val_ratio: 0.2
@@ -48,42 +54,34 @@ FireTr:
     heads: [3, 6, 12]
     head_dim: 32
     window_size: 8
-    relative_pos_embedding: True
-    # topography=4 (aspect sin/cos), vegetation=6, fuel=10, RGB frames=9
-    modal_channel: 29
-    # 0 is reserved for NoData; raw LANDFIRE code n is stored as n+1.
+    relative_pos_embedding: true
+    modal_channel: 23
     environment_category_cardinality: 65537
-  Spatial:
-    embed_dim: 384
-    num_heads: 4
-    hidden_dim: 512
-  Temporal:
-    embed_dim: 384
-    num_heads: 4
-    hidden_dim: 512
-  Time:
-    embed_dim: 384
-    num_heads: 4
-    hidden_dim: 512
+  Spatial: {embed_dim: 384, num_heads: 4, hidden_dim: 512}
+  Temporal: {embed_dim: 384, num_heads: 4, hidden_dim: 512}
+  Time: {embed_dim: 384, num_heads: 4, hidden_dim: 512}
 
 training:
-  batch_size: 4
+  # One 32 GB vGPU: keep the microbatch small; four microbatches retain an
+  # effective batch of four without needing four samples resident at once.
+  batch_size: 1
+  gradient_accumulation_steps: 4
+  require_cuda: true
   learning_rate: 0.0001
-  epochs: 3
+  epochs: 10
 
 checkpoint:
-  checkpoint: False
-  checkpoint_path: 'output/models/quick_test/best_iou.pth'
-  model_save_path: 'output/models/quick_test'
-  # Full resume: load model + optimizer + scheduler + epoch from last.pth
-  resume: False
-  resume_path: 'output/models/quick_test/last.pth'
-  save_interval: 5        # save epoch_N.pth every N epochs (0 = disable)
-  keep_last_n: 3          # keep only the latest N periodic checkpoints
+  checkpoint: false
+  checkpoint_path: /root/autodl-tmp/Sim2Real-Fire-output/models/sim_full/best_iou.pth
+  model_save_path: /root/autodl-tmp/Sim2Real-Fire-output/models/sim_full
+  resume: false
+  resume_path: /root/autodl-tmp/Sim2Real-Fire-output/models/sim_full/last.pth
+  save_interval: 5
+  keep_last_n: 3
 
 logging:
-  log_dir: 'output/logs/quick_test'
+  log_dir: /root/autodl-tmp/Sim2Real-Fire-output/logs/sim_full
   plot_curves: true
-  tensorboard: true
-  save_batch_metrics: false
+  tensorboard: false
+  save_batch_metrics: true
   batch_log_interval: 10

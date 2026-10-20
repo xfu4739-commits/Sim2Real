@@ -7,6 +7,8 @@ than under the ignored local ``test`` directory so a clean checkout can train.
 import cv2
 import numpy as np
 
+from dataset.figure2_overlay import fuse_opaque_overlay
+
 
 def load_rgb(path, size=(256, 256)):
     image = cv2.imread(str(path), cv2.IMREAD_COLOR)
@@ -207,6 +209,8 @@ def apply_style(
     seed=0,
 ):
     """Apply the configured satellite fusion style."""
+    if style == "figure2":
+        return fuse_opaque_overlay(base, mask)
     if style == "overlay":
         return fuse_satellite(
             base,
