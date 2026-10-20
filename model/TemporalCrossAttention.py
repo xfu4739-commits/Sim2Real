@@ -126,11 +126,11 @@ class TemporalCrossAttention(nn.Module):
         attn_output = attn_output.reshape(b, h, w, t, c).permute(0, 3, 4, 1, 2)
         attn_output = attn_output + fire_features
 
-        attn_output = self.norm1(attn_output.view(b * t, c, h * w).transpose(1, 2)).transpose(1, 2).view(b, t, c, h, w)
+        attn_output = self.norm1(attn_output.reshape(b * t, c, h * w).transpose(1, 2)).transpose(1, 2).reshape(b, t, c, h, w)
 
-        ff_output = self.ff(attn_output.view(b * t, c, h * w).transpose(1, 2)).transpose(1, 2).view(b, t, c, h, w)
+        ff_output = self.ff(attn_output.reshape(b * t, c, h * w).transpose(1, 2)).transpose(1, 2).reshape(b, t, c, h, w)
 
-        output = self.norm2(ff_output.view(b * t, c, h * w).transpose(1, 2)).transpose(1, 2).view(b, t, c, h, w)
+        output = self.norm2(ff_output.reshape(b * t, c, h * w).transpose(1, 2)).transpose(1, 2).reshape(b, t, c, h, w)
         output = output + attn_output
 
         return output
