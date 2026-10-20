@@ -12,6 +12,7 @@ are measured separately from the masks used by each dataset split.
 import argparse
 import csv
 import math
+import re
 import sys
 from collections import defaultdict
 from functools import lru_cache
@@ -28,7 +29,7 @@ if str(ROOT) not in sys.path:
 
 from dataset.sim_dataset import SimFireDataset
 from model.S2RFireTr import FireTr
-from lib.plotting import plot_results, plot_checkpoint_trend
+from lib.plotting import plot_results, plot_checkpoint_trend, plot_horizon_trends
 from utils import load_config
 
 
@@ -170,17 +171,40 @@ def evaluate(dataset, model, device, batch_size, threshold):
     return rows
 
 
+def epoch_checkpoints(directory):
+    """Use numbered epoch snapshots only, in numerical order (not 1, 10, 2)."""
+    numbered = []
+    for path in Path(directory).glob('epoch_*.pth'):
+        match = re.fullmatch(r'epoch_(\d+)\.pth', path.name)
+        if match and path.is_file():
+            numbered.append((int(match.group(1)), path))
+    if not numbered:
+        raise FileNotFoundError(f'no epoch_N.pth checkpoints found in {directory}')
+    numbered.sort()
+    epochs = {epoch for epoch, _ in numbered}
+    missing = sorted(set(range(1, max(epochs) + 1)) - epochs)
+    if missing:
+        print(f'Warning: missing epoch checkpoints {missing}; their metrics cannot be recovered.')
+    return [str(path) for _, path in numbered]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True)
-    parser.add_argument('--checkpoint', required=True, action='append',
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument('--checkpoint', action='append',
                         help='checkpoint path; repeat to compare several epochs')
+    source.add_argument('--checkpoint-dir', help='evaluate every epoch_N.pth in a run directory')
     parser.add_argument('--output-dir', required=True)
     parser.add_argument('--split', choices=('train', 'val'), default='val')
     parser.add_argument('--batch-size', type=int, default=4)
     parser.add_argument('--threshold', type=float, default=0.5)
     parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     args = parser.parse_args()
+    checkpoints = epoch_checkpoints(args.checkpoint_dir) if args.checkpoint_dir else args.checkpoint
+    labels = [Path(path).stem for path in checkpoints]
+    if len(labels) != len(set(labels)):
+        parser.error('checkpoint filenames must have distinct stems')
     if not 0 < args.threshold < 1 or args.batch_size < 1:
         parser.error('threshold must be in (0,1) and batch-size must be positive')
     try:
@@ -200,18 +224,22 @@ def main():
     device = torch.device(args.device)
     model = FireTr(cfg['FireTr']).to(device)
     summaries = []
-    labels = [Path(path).stem for path in args.checkpoint]
-    if len(labels) != len(set(labels)):
-        parser.error('checkpoint filenames must have distinct stems')
-    for checkpoint, label in zip(args.checkpoint, labels):
+    epoch_horizons = []
+    for checkpoint, label in zip(checkpoints, labels):
         current_dir = output_dir if len(labels) == 1 else output_dir / label
         current_dir.mkdir(parents=True, exist_ok=True)
-        weights = torch.load(checkpoint, map_location=device, weights_only=True)
+        # Full training checkpoints also contain Adam states; keep these on CPU.
+        weights = torch.load(checkpoint, map_location='cpu', weights_only=True)
+        match = re.fullmatch(r'epoch_(\d+)', label)
+        epoch = weights.get('epoch', int(match.group(1)) if match else None)
         if isinstance(weights, dict) and 'model_state_dict' in weights:
             weights = weights['model_state_dict']
         model.load_state_dict(weights, strict=True)
+        del weights
         rows = evaluate(datasets[args.split], model, device, args.batch_size, args.threshold)
         horizons, events = summarize(rows, 'step'), summarize(rows, 'event')
+        for horizon in horizons:
+            epoch_horizons.append(dict(epoch=epoch, checkpoint_label=label, **horizon))
         write_csv(current_dir / 'sample_steps.csv', rows)
         write_csv(current_dir / 'horizon_metrics.csv', horizons)
         write_csv(current_dir / 'event_metrics.csv', events)
@@ -221,16 +249,21 @@ def main():
         macro = float(np.mean(valid_event_iou)) if valid_event_iou else math.nan
         micro = ratio(sum(item['tp'] for item in horizons),
                       sum(item['union'] for item in horizons))
-        summary = dict(split=args.split, checkpoint_label=label,
+        summary = dict(split=args.split, epoch=epoch, checkpoint_label=label,
                        checkpoint=checkpoint, threshold=args.threshold,
                        events=len(events), sample_steps=len(rows),
                        micro_iou=micro, event_macro_iou=macro)
         write_csv(current_dir / 'summary.csv', [summary])
         summaries.append(summary)
+        # Save completed results incrementally so a later interruption does not
+        # discard earlier epochs. Missing epochs are never interpolated.
+        write_csv(output_dir / 'checkpoint_summary.csv', summaries)
+        write_csv(output_dir / 'epoch_horizon_metrics.csv', epoch_horizons)
         print(f'{label}: global IoU={micro:.4f}, event-mean IoU={macro:.4f}')
     if len(summaries) > 1:
         write_csv(output_dir / 'checkpoint_summary.csv', summaries)
         plot_checkpoint_trend(output_dir, summaries)
+        plot_horizon_trends(output_dir, epoch_horizons)
     print(f'Wrote diagnostics to {output_dir}')
 
 

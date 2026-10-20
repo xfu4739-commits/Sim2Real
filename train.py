@@ -25,6 +25,7 @@ from dataset.sim_dataset import SimFireDataset
 from lib.dice_loss import BinaryDiceLoss
 from lib.focal_loss import BinaryFocalLoss
 from lib.losses import combined_losses
+from lib.fire_diagnostics import batch_fire_counts, summarize_fire_counts
 from lib.training_logger import (
     TrainingLogger,
     build_checkpoint,
@@ -295,6 +296,8 @@ def val_loop(dataloader, model, device, loss_dice, loss_focal, epoch, total_epoc
     sample_count_local = 0
     metric = SegmentationMetric(2)
     auprc = BinaryAUPRCHistogram(device)
+    fire_counts = torch.zeros((eval_model.input_length, 7), dtype=torch.float64, device=device)
+    reverse = dataloader.dataset.reverse
     val_start = time.time()
 
     with torch.no_grad():
@@ -326,6 +329,8 @@ def val_loop(dataloader, model, device, loss_dice, loss_focal, epoch, total_epoc
             auprc.update(pred, output_squence)
 
             pred = torch.where(pred > 0.5, torch.ones_like(pred), torch.zeros_like(pred))
+            batch_counts = batch_fire_counts(pred, output_squence, input_squence, reverse)
+            fire_counts += batch_counts
             pred, output_squence = pred.cpu().numpy(), output_squence.cpu().numpy()
             pred, output_squence = pred.astype(np.int32), output_squence.astype(np.int32)
             metric.addBatch(pred, output_squence)
@@ -345,6 +350,7 @@ def val_loop(dataloader, model, device, loss_dice, loss_focal, epoch, total_epoc
     confusion = torch.tensor(metric.confusionMatrix, dtype=torch.float64, device=device)
     if dist.is_initialized():
         dist.all_reduce(confusion, op=dist.ReduceOp.SUM)
+        dist.all_reduce(fire_counts, op=dist.ReduceOp.SUM)
     metric.confusionMatrix = confusion.cpu().numpy()
 
     mAp = float(auprc.compute(sync_dist=True).item())
@@ -358,6 +364,7 @@ def val_loop(dataloader, model, device, loss_dice, loss_focal, epoch, total_epoc
         'val_focal_loss': focal_sum / sample_count if sample_count > 0 else 0.0,
         'auprc': mAp,
         'val_time_sec': time.time() - val_start,
+        'horizons': summarize_fire_counts(fire_counts, epoch),
         **seg_stats,
     }
 
@@ -513,6 +520,7 @@ def _run_training(rank, world_size, device, config_path):
         current_lr = scheduler.get_last_lr()[0]
 
         if is_main_process(rank):
+            horizons = val_metrics.pop('horizons')
             best_metrics = save_best_weights(
                 model, val_metrics['iou_fg'], val_metrics['auprc'], best_metrics, model_save_path, logger
             )
@@ -530,6 +538,7 @@ def _run_training(rank, world_size, device, config_path):
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             }
             logger.log_epoch(epoch_log)
+            logger.log_horizons(horizons, reverse=cfg['dataset']['reverse'])
 
         # Keep every rank on the same epoch while rank 0 writes checkpoints.
         if dist.is_initialized():

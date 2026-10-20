@@ -7,7 +7,7 @@ from datetime import datetime
 import torch
 import yaml
 
-from lib.plotting import plot_training_history
+from lib.plotting import plot_fire_horizon_history, plot_training_history
 
 
 CSV_COLUMNS = [
@@ -43,6 +43,11 @@ BATCH_CSV_COLUMNS = [
     'timestamp',
 ]
 
+FIRE_HORIZON_COLUMNS = [
+    'epoch', 'step', 'samples', 'iou', 'precision', 'recall', 'area_ratio',
+    'mean_fp_pixels', 'mean_fn_pixels', 'growth_iou', 'growth_recall',
+]
+
 
 def create_run_id():
     return datetime.now().strftime('%Y%m%d_%H%M%S_%f')
@@ -64,6 +69,7 @@ class TrainingLogger:
         self.csv_path = os.path.join(self.log_dir, 'metrics.csv')
         self.batch_csv_path = os.path.join(self.log_dir, 'batch_metrics.csv')
         self.log_path = os.path.join(self.log_dir, 'training.log')
+        self.fire_horizon_csv_path = os.path.join(self.log_dir, 'fire_horizon_metrics.csv')
         self.start_time = datetime.now()
         self.writer = None
 
@@ -72,6 +78,8 @@ class TrainingLogger:
 
         with open(self.csv_path, 'w', newline='', encoding='utf-8') as f:
             csv.writer(f).writerow(CSV_COLUMNS)
+        with open(self.fire_horizon_csv_path, 'w', newline='', encoding='utf-8') as f:
+            csv.writer(f).writerow(FIRE_HORIZON_COLUMNS)
         if self.save_batch_metrics:
             with open(self.batch_csv_path, 'w', newline='', encoding='utf-8') as f:
                 csv.writer(f).writerow(BATCH_CSV_COLUMNS)
@@ -130,6 +138,23 @@ class TrainingLogger:
             f'mem={metrics["max_mem_mb"]:.0f}MB | '
             f'best_iou={metrics["best_iou"]:.4f} best_map={metrics["best_map"]:.4f}'
         )
+
+    def log_horizons(self, rows, reverse=False):
+        with open(self.fire_horizon_csv_path, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            for row in rows:
+                writer.writerow([row.get(key, '') for key in FIRE_HORIZON_COLUMNS])
+        if self.plot_curves and rows:
+            plot_fire_horizon_history(self.fire_horizon_csv_path, self.log_dir, reverse)
+        for row in rows:
+            self.log(
+                f'  target step {row["step"]}: IoU={row["iou"]:.4f} '
+                f'P={row["precision"]:.4f} R={row["recall"]:.4f} '
+                f'area_ratio={row["area_ratio"]:.3f} '
+                f'growth_IoU={row["growth_iou"]:.4f} '
+                f'growth_R={row["growth_recall"]:.4f} '
+                f'FP={row["mean_fp_pixels"]:.0f} FN={row["mean_fn_pixels"]:.0f}'
+            )
 
     def should_log_batch(self, batch, total_batches):
         return batch == 1 or batch == total_batches or batch % self.batch_log_interval == 0

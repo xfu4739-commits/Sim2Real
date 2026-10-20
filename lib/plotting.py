@@ -85,6 +85,41 @@ def plot_training_history(metrics_csv, output_dir=None):
     return loss_path, metrics_path
 
 
+def plot_fire_horizon_history(csv_path, output_dir, reverse=False):
+    """Plot per-epoch validation diagnostics for each target step."""
+    rows = _read_numeric_csv(csv_path)
+    if not rows:
+        return None
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    fields = (
+        ('iou', 'Foreground IoU'), ('precision', 'Precision'),
+        ('recall', 'Recall'), ('area_ratio', 'Predicted / true area'),
+        ('growth_iou', 'Recovered growth IoU' if reverse else 'New fire IoU'),
+        ('growth_recall', 'Recovered growth recall' if reverse else 'New fire recall'),
+        ('mean_fp_pixels', 'Mean false-positive pixels'),
+        ('mean_fn_pixels', 'Mean false-negative pixels'),
+    )
+    fig, axes = plt.subplots(2, 4, figsize=(18, 8))
+    for axis, (key, title) in zip(axes.flat, fields):
+        for step in sorted({int(row['step']) for row in rows}):
+            group = [row for row in rows if int(row['step']) == step]
+            axis.plot([row['epoch'] for row in group], [row[key] for row in group],
+                      marker='o', label=f'Step {step}')
+        axis.set(title=title, xlabel='Epoch')
+        if key == 'area_ratio':
+            axis.axhline(1, color='gray', linestyle='--', linewidth=1)
+        axis.grid(alpha=0.3)
+        axis.legend()
+    fig.tight_layout()
+    output_path = os.path.join(output_dir, 'fire_horizon_curves.png')
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
+    return output_path
+
+
 def plot_results(output_dir, horizons, events, prevalence_rows, reverse):
     import matplotlib
     matplotlib.use('Agg')
@@ -154,5 +189,42 @@ def plot_checkpoint_trend(output_dir, summaries):
     axis.legend()
     fig.tight_layout()
     fig.savefig(output_dir / 'checkpoint_trend.png', dpi=160)
+    plt.close(fig)
+
+
+def plot_horizon_trends(output_dir, rows):
+    """Compare each target horizon across saved epochs, including missing epochs."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    steps = sorted({row['step'] for row in rows})
+    labels = list(dict.fromkeys(row['checkpoint_label'] for row in rows))
+    use_epochs = all(row['epoch'] is not None for row in rows)
+    fig, axes = plt.subplots(2, 4, figsize=(18, 8))
+    fields = (
+        ('iou', 'Foreground IoU'), ('precision', 'Precision'),
+        ('recall', 'Recall'), ('area_ratio', 'Predicted / true area'),
+        ('growth_iou', 'Forward-time growth IoU'),
+        ('growth_recall', 'Forward-time growth recall'),
+        ('mean_fp_pixels', 'Mean FP pixels'), ('mean_fn_pixels', 'Mean FN pixels'),
+    )
+    for axis, (key, title) in zip(axes.flat, fields):
+        for step in steps:
+            group = [row for row in rows if row['step'] == step]
+            if use_epochs:
+                group.sort(key=lambda row: row['epoch'])
+            x = [row['epoch'] if use_epochs else labels.index(row['checkpoint_label'])
+                 for row in group]
+            axis.plot(x, [row[key] for row in group], marker='o', label=f'Step {step}')
+        axis.set(title=title, xlabel='Epoch' if use_epochs else 'Checkpoint')
+        if key == 'area_ratio':
+            axis.axhline(1, color='gray', linestyle='--', linewidth=1)
+        if not use_epochs:
+            axis.set_xticks(range(len(labels)), labels, rotation=35, ha='right')
+        axis.grid(alpha=0.3)
+        axis.legend()
+    fig.tight_layout()
+    fig.savefig(output_dir / 'epoch_horizon_trends.png', dpi=160)
     plt.close(fig)
 
