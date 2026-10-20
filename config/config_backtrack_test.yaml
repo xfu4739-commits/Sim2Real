@@ -1,0 +1,51 @@
+dataset:
+  real_root_dir: /root/autodl-tmp/Sim2Real-Fire-data/real_full
+  vis_dir: /root/autodl-tmp/Sim2Real-Fire-output/vis/sim_day_backtrack_desktop_best_iou_test
+
+  real_satellite_dir: Satellite_Images
+  test_dir: Satellite_Images_Mask
+  testwxs_dir: Weather_Data
+  topo_dir: Topography_Map
+  vege_dir: Vegetation_Map
+  fuel_dir: Fuel_Map
+
+  input_length: 3
+  img_size: [256, 256]
+  reverse: true
+  num_workers: 8
+  environment_cache_size: 4
+
+FireTr:
+  input_length: 3
+  img_size: [256, 256]
+
+  Encoder:
+    hidden_dim: 96
+    downscaling_factors: [4, 2, 2]
+    layers: [2, 2, 2]
+    heads: [3, 6, 12]
+    head_dim: 32
+    window_size: 8
+    relative_pos_embedding: true
+    modal_channel: 23
+    environment_category_cardinality: 65537
+
+  Spatial:
+    embed_dim: 384
+    num_heads: 4
+    hidden_dim: 512
+
+  Temporal:
+    embed_dim: 384
+    num_heads: 4
+    hidden_dim: 512
+
+  Time:
+    embed_dim: 384
+    num_heads: 4
+    hidden_dim: 512
+
+checkpoint:
+  checkpoint: true
+  # 将 RUN_ID 替换为本次训练在 models/sim_day_backtrack_desktop 下生成的目录名。
+  checkpoint_path: /root/autodl-tmp/Sim2Real-Fire-output/models/sim_day_backtrack_desktop/RUN_ID/best_iou.pth
