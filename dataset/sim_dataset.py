@@ -17,11 +17,6 @@ from dataset.satellite_fusion import (
 )
 from dataset.time_normalization import normalize_target_timestamps
 
-torch.manual_seed(0)
-np.random.seed(0)
-random.seed(0)
-
-
 def _parse_sim_split_cfg(cfg):
     split_cfg = cfg.get('sim_split') or {}
     return {

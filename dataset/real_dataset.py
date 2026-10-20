@@ -1,7 +1,6 @@
 import os
 import cv2
 import torch
-import random
 import numpy as np
 from torch.utils.data import Dataset
 from datetime import datetime
@@ -12,10 +11,6 @@ from dataset.common import (
     resolve_scene_roots,
 )
 from dataset.time_normalization import normalize_target_timestamps
-
-torch.manual_seed(0)
-np.random.seed(0)
-random.seed(0)
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
 
