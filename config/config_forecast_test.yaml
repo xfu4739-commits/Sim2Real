@@ -6,7 +6,7 @@ dataset:
     - /root/autodl-tmp/Sim2Real-Fire-data/sim_full/0172_00204
 
   real_root_dir: /root/autodl-tmp/Sim2Real-Fire-data/real_full
-  vis_dir: /root/autodl-tmp/Sim2Real-Fire-output/vis/sim_day_forecast_best_iou
+  vis_dir: /root/autodl-tmp/Sim2Real-Fire-output/vis/sim_day_forecast_desktop_20261012_best_iou
 
   train_dir: Satellite_Images_Mask
   val_dir: Satellite_Images_Mask
@@ -83,7 +83,7 @@ checkpoint:
   # 测试时加载训练好的模型
   checkpoint: true
 
-  checkpoint_path: /root/autodl-tmp/Sim2Real-Fire-output/models/sim_day_forecast/20261003_202147_091408/best_iou.pth
+  checkpoint_path: /root/autodl-tmp/Sim2Real-Fire-output/models/sim_day_forecast_desktop/20261012_223159_261712/best_iou.pth
 
   model_save_path: /root/autodl-tmp/Sim2Real-Fire-output/models/sim_day_forecast
 

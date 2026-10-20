@@ -6,7 +6,7 @@ dataset:
     - /root/autodl-tmp/Sim2Real-Fire-data/sim_full/0172_00204
 
   real_root_dir: /root/autodl-tmp/Sim2Real-Fire-data/real_full
-  vis_dir: /root/autodl-tmp/Sim2Real-Fire-output/vis/sim_day_forecast
+  vis_dir: /root/autodl-tmp/Sim2Real-Fire-output/vis/sim_day_forecast_desktop
 
   train_dir: Satellite_Images_Mask
   val_dir: Satellite_Images_Mask
@@ -84,21 +84,21 @@ training:
 checkpoint:
   # 训练新模型时不要加载旧权重
   checkpoint: false
-  checkpoint_path: /root/autodl-tmp/Sim2Real-Fire-output/models/sim_day_forecast/best_iou.pth
+  checkpoint_path: /root/autodl-tmp/Sim2Real-Fire-output/models/sim_day_forecast_desktop/best_iou.pth
 
   # 程序会在这里自动创建 run_id 子目录
-  model_save_path: /root/autodl-tmp/Sim2Real-Fire-output/models/sim_day_forecast
+  model_save_path: /root/autodl-tmp/Sim2Real-Fire-output/models/sim_day_forecast_desktop
 
   # 从头训练
   resume: false
-  resume_path: /root/autodl-tmp/Sim2Real-Fire-output/models/sim_day_forecast/last.pth
+  resume_path: /root/autodl-tmp/Sim2Real-Fire-output/models/sim_day_forecast_desktop/last.pth
 
   save_interval: 5
   keep_last_n: 3
 
 logging:
   # 程序会在这里自动创建 run_id 子目录
-  log_dir: /root/autodl-tmp/Sim2Real-Fire-output/logs/sim_day_forecast
+  log_dir: /root/autodl-tmp/Sim2Real-Fire-output/logs/sim_day_forecast_desktop
 
   plot_curves: true
   tensorboard: true
